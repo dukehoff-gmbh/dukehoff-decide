@@ -1,0 +1,26 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: 21
+          cache: maven
+      # Unit tests need no model; the live tests skip themselves without DUKEHOFF_DECIDE_OPENAI_* variables.
+      # The build also fails on Java files without the license header.
+      - name: Build and test
+        run: mvn -B -ntp verify
+      - name: Check javadoc and sources as the release does
+        run: mvn -B -ntp -Prelease -Dgpg.skip -DskipTests verify

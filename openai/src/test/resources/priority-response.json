@@ -1,0 +1,30 @@
+{
+  "id": "chatcmpl-8a1f",
+  "object": "chat.completion",
+  "created": 1790000000,
+  "model": "qwen2.5-3b-instruct",
+  "choices": [
+    {
+      "index": 0,
+      "message": {"role": "assistant", "content": "A"},
+      "logprobs": {
+        "content": [
+          {
+            "token": "A",
+            "logprob": -0.1625,
+            "bytes": [65],
+            "top_logprobs": [
+              {"token": "A", "logprob": -0.1625, "bytes": [65]},
+              {"token": "B", "logprob": -2.05, "bytes": [66]},
+              {"token": " A", "logprob": -3.9, "bytes": [32, 65]},
+              {"token": "The", "logprob": -6.2, "bytes": [84, 104, 101]},
+              {"token": "C", "logprob": -7.5, "bytes": [67]}
+            ]
+          }
+        ]
+      },
+      "finish_reason": "length"
+    }
+  ],
+  "usage": {"prompt_tokens": 142, "completion_tokens": 1, "total_tokens": 143}
+}

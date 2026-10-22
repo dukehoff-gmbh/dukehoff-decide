@@ -1,0 +1,3 @@
+com.dukehoff.decide.spring.DecideAutoConfiguration
+com.dukehoff.decide.spring.DecideHealthAutoConfiguration
+com.dukehoff.decide.spring.DecideMetricsAutoConfiguration
