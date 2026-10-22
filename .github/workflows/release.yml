@@ -1,0 +1,143 @@
+name: Release
+
+# A tag v<version> (e.g. v0.1.0) builds and tests that version, signs it with the Dukehoff release key, uploads it
+# to Maven Central and then creates the GitHub release. The version comes from the tag; the poms on main stay at
+# -SNAPSHOT and nothing is committed. The Central upload waits for "Publish" in the Central Portal unless the
+# repository variable CENTRAL_AUTO_PUBLISH is true.
+#
+# Started by hand (Actions > Release > Run workflow) it is a dry run: the same build, tests and bundle check,
+# signed if the key is available, without upload; the bundle is kept as a workflow artifact for 7 days.
+#
+# Secrets: CENTRAL_USERNAME and CENTRAL_PASSWORD (a Central Portal user token), MAVEN_GPG_PRIVATE_KEY (the armored
+# Dukehoff release key) and MAVEN_GPG_PASSPHRASE.
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version for the dry run, e.g. 0.1.0'
+        required: true
+        default: '0.0.0-dryrun'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      RELEASE: ${{ github.ref_type == 'tag' }}
+      HAS_CENTRAL: ${{ secrets.CENTRAL_USERNAME != '' && secrets.CENTRAL_PASSWORD != '' }}
+      HAS_KEY: ${{ secrets.MAVEN_GPG_PRIVATE_KEY != '' && secrets.MAVEN_GPG_PASSPHRASE != '' }}
+    steps:
+      - name: Secrets for a release
+        if: env.RELEASE == 'true' && (env.HAS_CENTRAL != 'true' || env.HAS_KEY != 'true')
+        run: |
+          echo "::error::A release needs the secrets CENTRAL_USERNAME, CENTRAL_PASSWORD, MAVEN_GPG_PRIVATE_KEY and MAVEN_GPG_PASSPHRASE."
+          exit 1
+
+      - uses: actions/checkout@v7
+
+      # also writes ~/.m2/settings.xml with the "central" server and imports the signing key, if present
+      - uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: maven
+          server-id: central
+          server-username: CENTRAL_USERNAME
+          server-password: CENTRAL_PASSWORD
+          gpg-private-key: ${{ secrets.MAVEN_GPG_PRIVATE_KEY }}
+          gpg-passphrase: MAVEN_GPG_PASSPHRASE
+
+      - name: Version
+        id: version
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
+        run: |
+          if [ "$RELEASE" = true ]; then version=${GITHUB_REF_NAME#v}; else version=$INPUT_VERSION; fi
+          echo "$version" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$' || { echo "::error::not a version: $version"; exit 1; }
+          case "$version" in *-SNAPSHOT) echo "::error::SNAPSHOT versions are not released: $version"; exit 1 ;; esac
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - name: Set the version
+        run: mvn -B -ntp versions:set -DnewVersion=${{ steps.version.outputs.version }} -DgenerateBackupPoms=false -DprocessAllModules=true
+
+      - name: Build and test
+        run: mvn -B -ntp clean verify
+
+      # builds the signed bundle exactly as it would be uploaded, without uploading it
+      - name: Build the bundle
+        env:
+          MAVEN_GPG_PASSPHRASE: ${{ secrets.MAVEN_GPG_PASSPHRASE }}
+        run: |
+          signing=; [ "$HAS_KEY" = true ] || signing=-Dgpg.skip
+          mvn -B -ntp -Prelease deploy -DskipTests -DskipUpload=true $signing
+
+      - name: Check the bundle
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          bundle=target/central-publishing/central-bundle.zip
+          unzip -Z1 "$bundle" | grep -v '/$' > entries.txt
+          echo "$(wc -l < entries.txt) entries"
+          # Central rejects a bundle with files outside the version folders
+          if grep -vE "^com/dukehoff/decide/dukehoff-decide-[a-z-]+/${VERSION//./\\.}/[^/]+$" entries.txt; then
+            echo "::error::files outside the version folders (see above)"; exit 1
+          fi
+          artifacts=$(cut -d/ -f4 entries.txt | sort -u | tr '\n' ' ')
+          expected="dukehoff-decide-core dukehoff-decide-openai dukehoff-decide-parent dukehoff-decide-spring-boot-starter "
+          [ "$artifacts" = "$expected" ] || { echo "::error::unexpected artifacts: $artifacts"; exit 1; }
+          if [ "$HAS_KEY" = true ]; then
+            missing=$(grep -E '\.(jar|pom)$' entries.txt | while read -r f; do grep -qx "$f.asc" entries.txt || echo "$f"; done)
+            [ -z "$missing" ] || { echo "::error::not signed: $missing"; exit 1; }
+            echo "all jars and poms signed"
+          fi
+
+      - name: Keep the bundle (dry run)
+        if: env.RELEASE != 'true'
+        uses: actions/upload-artifact@v7
+        with:
+          name: dukehoff-decide-${{ steps.version.outputs.version }}-bundle
+          path: target/central-publishing/central-bundle.zip
+          retention-days: 7
+
+      - name: Upload to Maven Central
+        if: env.RELEASE == 'true'
+        env:
+          CENTRAL_USERNAME: ${{ secrets.CENTRAL_USERNAME }}
+          CENTRAL_PASSWORD: ${{ secrets.CENTRAL_PASSWORD }}
+          MAVEN_GPG_PASSPHRASE: ${{ secrets.MAVEN_GPG_PASSPHRASE }}
+        run: |
+          mvn -B -ntp -Prelease deploy -DskipTests -Dcentral.autoPublish=${{ vars.CENTRAL_AUTO_PUBLISH == 'true' }}
+
+      - name: GitHub release
+        if: env.RELEASE == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          cat > notes.md <<EOF
+          dukehoff-decide ${VERSION}: typed, calibrated decisions from small language models for Java.
+
+          \`\`\`xml
+          <dependency>
+              <groupId>com.dukehoff.decide</groupId>
+              <artifactId>dukehoff-decide-openai</artifactId>   <!-- or dukehoff-decide-spring-boot-starter -->
+              <version>${VERSION}</version>
+          </dependency>
+          \`\`\`
+
+          Maven Central has it about half an hour after it is published there. Getting started, results and
+          limitations: [README](https://github.com/${GITHUB_REPOSITORY}/blob/${GITHUB_REF_NAME}/README.md).
+          EOF
+          prerelease=; case "$VERSION" in *-*) prerelease=--prerelease ;; esac
+          gh release create "$GITHUB_REF_NAME" --verify-tag --title "dukehoff-decide ${VERSION}" \
+              --notes-file notes.md --generate-notes $prerelease

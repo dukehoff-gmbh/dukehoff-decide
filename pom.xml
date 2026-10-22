@@ -67,6 +67,8 @@
         <github.url>https://github.com/dukehoff-gmbh/dukehoff-decide</github.url>
         <license.owner>Dukehoff GmbH</license.owner>
         <license.year>2026</license.year>
+        <!-- the release workflow sets it from the repository variable CENTRAL_AUTO_PUBLISH -->
+        <central.autoPublish>false</central.autoPublish>
     </properties>
 
     <dependencyManagement>
@@ -252,7 +254,7 @@
                         <extensions>true</extensions>
                         <configuration>
                             <publishingServerId>central</publishingServerId>
-                            <autoPublish>false</autoPublish>
+                            <autoPublish>${central.autoPublish}</autoPublish>
                             <excludeArtifacts>
                                 <excludeArtifact>dukehoff-decide-showcase</excludeArtifact>
                             </excludeArtifacts>
