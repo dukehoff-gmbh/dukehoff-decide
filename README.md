@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="docs/dukehoff-decide-logo.svg" alt="dukehoff-decide logo: Duke holding a checklist and pointing at a ticked option" width="180">
+</p>
+
 # dukehoff-decide
 
 Type-safe, calibrated decisions from small language models, for Java.
