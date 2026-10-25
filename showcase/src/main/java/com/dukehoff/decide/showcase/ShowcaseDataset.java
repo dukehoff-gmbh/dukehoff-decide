@@ -69,7 +69,8 @@ interface ShowcaseDataset<T> {
             case "tickets" -> new TicketDataset();
             case "bitext" -> new BitextDataset();
             case "massive" -> new MassiveDataset();
-            default -> throw new IllegalArgumentException("Unknown dataset '" + id + "', use tickets, bitext or massive");
+            case "cfpb" -> new CfpbDataset();
+            default -> throw new IllegalArgumentException("Unknown dataset '" + id + "', use tickets, bitext, massive or cfpb");
         };
     }
 

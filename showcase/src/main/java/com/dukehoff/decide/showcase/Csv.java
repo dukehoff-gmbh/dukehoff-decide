@@ -15,10 +15,16 @@
  */
 package com.dukehoff.decide.showcase;
 
+import java.io.BufferedReader;
+import java.io.IOException;
+import java.io.Reader;
+import java.io.StringReader;
+import java.io.UncheckedIOException;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.function.Consumer;
 
 /** Minimal RFC 4180 reader: quoted fields, embedded newlines and {@code ""} escapes. First row is the header. */
 final class Csv {
@@ -26,29 +32,28 @@ final class Csv {
     private Csv() {}
 
     static List<Map<String, String>> read(String csv) {
-        List<List<String>> records = records(csv);
-        if (records.isEmpty()) return List.of();
-        List<String> header = records.getFirst();
-        List<Map<String, String>> out = new ArrayList<>(records.size() - 1);
-        for (List<String> rec : records.subList(1, records.size())) {
-            Map<String, String> row = new LinkedHashMap<>();
-            for (int i = 0; i < header.size(); i++) row.put(header.get(i), i < rec.size() ? rec.get(i) : "");
-            out.add(row);
+        List<Map<String, String>> out = new ArrayList<>();
+        try {
+            stream(new StringReader(csv), out::add);
+        } catch (IOException e) {
+            throw new UncheckedIOException(e);
         }
         return out;
     }
 
-    static List<List<String>> records(String s) {
-        List<List<String>> records = new ArrayList<>();
+    /** Calls {@code row} for every record after the header, without holding the whole input in memory. */
+    static void stream(Reader in, Consumer<Map<String, String>> row) throws IOException {
+        Reader r = in instanceof BufferedReader ? in : new BufferedReader(in, 1 << 16);
+        List<String> header = null;
         List<String> record = new ArrayList<>();
         StringBuilder field = new StringBuilder();
         boolean quoted = false;
-        int i = 0, n = s.length();
-        while (i < n) {
-            char c = s.charAt(i++);
+        int c = r.read();
+        while (c != -1) {
+            int next = r.read();
             if (quoted) {
-                if (c != '"') field.append(c);
-                else if (i < n && s.charAt(i) == '"') { field.append('"'); i++; }
+                if (c != '"') field.append((char) c);
+                else if (next == '"') { field.append('"'); next = r.read(); }
                 else quoted = false;
             } else if (c == '"') {
                 quoted = true;
@@ -56,19 +61,27 @@ final class Csv {
                 record.add(field.toString());
                 field.setLength(0);
             } else if (c == '\n' || c == '\r') {
-                if (c == '\r' && i < n && s.charAt(i) == '\n') i++;
+                if (c == '\r' && next == '\n') next = r.read();
                 record.add(field.toString());
                 field.setLength(0);
-                records.add(record);
+                header = emit(header, record, row);
                 record = new ArrayList<>();
             } else {
-                field.append(c);
+                field.append((char) c);
             }
+            c = next;
         }
         if (!field.isEmpty() || !record.isEmpty()) {
             record.add(field.toString());
-            records.add(record);
+            emit(header, record, row);
         }
-        return records;
+    }
+
+    private static List<String> emit(List<String> header, List<String> record, Consumer<Map<String, String>> row) {
+        if (header == null) return record;
+        Map<String, String> m = new LinkedHashMap<>();
+        for (int i = 0; i < header.size(); i++) m.put(header.get(i), i < record.size() ? record.get(i) : "");
+        row.accept(m);
+        return header;
     }
 }

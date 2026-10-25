@@ -101,8 +101,24 @@ class ShowcaseTest {
     }
 
     @Test
+    void cutsLongComplaintsAtAWordBoundary() {
+        assertEquals("short text", CfpbDataset.cut("  short text "));
+        String cut = CfpbDataset.cut("word ".repeat(2000));
+        assertTrue(cut.length() <= CfpbDataset.MAX_CHARS + 2, cut.length() + "");
+        assertTrue(cut.endsWith("word …"));
+        assertEquals(ConsumerComplaint.Product.MORTGAGE, CfpbDataset.PRODUCTS.get("Mortgage"));
+    }
+
+    @Test
+    void csvStreamsLargeInputRowByRow() throws Exception {
+        List<Map<String, String>> rows = new java.util.ArrayList<>();
+        Csv.stream(new java.io.StringReader("a,b\r\n1,\"x\ny\"\n2,z"), rows::add);
+        assertEquals(List.of(Map.of("a", "1", "b", "x\ny"), Map.of("a", "2", "b", "z")), rows);
+    }
+
+    @Test
     void everyDatasetMapsToAValidSchema() {
-        for (String id : List.of("tickets", "bitext", "massive")) {
+        for (String id : List.of("tickets", "bitext", "massive", "cfpb")) {
             ShowcaseDataset<?> ds = ShowcaseDataset.byId(id);
             var schema = Decider.builder().backend(new ScriptedBackend("s", (s, f) -> ScriptedBackend.uniform(f)))
                     .build().task(ds.type()).schema();
@@ -175,8 +191,9 @@ class ShowcaseTest {
         assertTrue(ShowcaseDataset.rest(all, 10, 1000, 1, "all", 0.5).dropped() > 0);
         assertTrue(training.stream().noneMatch(sample::contains));
 
-        LinearBackend lb = Showcase.train(new BitextDataset(), schema, training,
-                new Showcase.Config("bitext", null, "linear", null, 0, 0, 1, "all", 1, null, null, null, "linear", 70, 1));
+        var lb = Showcase.train(new BitextDataset(), schema, training,
+                new Showcase.Config("bitext", null, "linear", null, 0, 0, 1, "all", 1, null, null, null, "linear", 70, 1,
+                        null, null), Showcase.linearTrainer());
         DecisionTask<CustomerRequest> task = Decider.builder().backend(lb).build().task(CustomerRequest.class);
         for (Example<CustomerRequest> e : sample) assertEquals(e.label(), task.decide(e.state()).value());
     }

@@ -29,6 +29,7 @@ import com.dukehoff.decide.calibration.Coverage;
 import com.dukehoff.decide.openai.OpenAiBackend;
 import com.dukehoff.decide.showcase.ShowcaseDataset.Example;
 import com.dukehoff.decide.spi.FieldSpec;
+import com.dukehoff.decide.spi.ScoringBackend;
 import com.dukehoff.decide.spi.ScoringBackend.ScoringRequest;
 import com.dukehoff.decide.spi.TaskSchema;
 import com.dukehoff.decide.testing.ScriptedBackend;
@@ -64,17 +65,19 @@ import java.util.stream.Stream;
  * mvn -q -pl showcase exec:java -Dshowcase.dataset=bitext -Dshowcase.model=qwen2.5-1.5b-instruct-q4_k_m
  * </pre>
  *
- * Settings (system properties): {@code showcase.dataset} (tickets, bitext, massive; default tickets),
+ * Settings (system properties): {@code showcase.dataset} (tickets, bitext, massive, cfpb; default tickets),
  * {@code showcase.baseUrl} (default http://localhost:8080/v1), {@code showcase.model}, {@code showcase.apiKey},
  * {@code showcase.calibration} (examples, default 300), {@code showcase.test} (default 300), {@code showcase.seed} (42),
  * {@code showcase.language} (all, en, de), {@code showcase.concurrency} (examples in flight, default 4),
  * {@code showcase.cache} (default ~/.cache/dukehoff-decide), {@code showcase.out} (default target/showcase/&lt;dataset&gt;),
  * {@code showcase.calibrator} (best, temperature; default best),
- * {@code showcase.backend} (llm, linear; default llm), {@code showcase.train} (linear only: training examples,
+ * {@code showcase.backend} (llm, linear, embedding; default llm), {@code showcase.train} (linear only: training examples,
  * disjoint from both splits, default 3000), {@code showcase.similarity} (linear only: drop training examples whose
- * character-trigram Jaccard similarity to a calibration or test example reaches this; default 1, exact duplicates).
+ * character-trigram Jaccard similarity to a calibration or test example reaches this; default 1, exact duplicates),
+ * {@code showcase.embeddingUrl} (default http://localhost:8081/v1), {@code showcase.embeddingModel} (default bge-m3).
  *
- * <p>{@code linear} needs no model: it trains {@link LinearBackend} (TF-IDF + logistic regression) on examples the
+ * <p>{@code embedding} does the same on vectors from an embedding model ({@link EmbeddingBackend}).
+ * {@code linear} needs no model: it trains {@link LinearBackend} (TF-IDF + logistic regression) on examples the
  * calibration and test splits don't contain, so its report is directly comparable with an LLM run on the same seed.
  */
 public final class Showcase {
@@ -85,14 +88,14 @@ public final class Showcase {
 
     record Config(String dataset, String baseUrl, String model, String apiKey, int calibration, int test, long seed,
                   String language, int concurrency, Path cache, Path out, Calibration.Method method,
-                  String backend, int train, double similarity) {
+                  String backend, int train, double similarity, String embeddingUrl, String embeddingModel) {
 
         static Config fromSystemProperties() {
             String backend = System.getProperty("showcase.backend", "llm");
-            if (!backend.equals("llm") && !backend.equals("linear")) {
-                throw new IllegalArgumentException("Unknown backend '" + backend + "', use llm or linear");
+            if (!List.of("llm", "linear", "embedding").contains(backend)) {
+                throw new IllegalArgumentException("Unknown backend '" + backend + "', use llm, linear or embedding");
             }
-            String model = System.getProperty("showcase.model", backend.equals("linear") ? "linear" : null);
+            String model = System.getProperty("showcase.model", backend.equals("llm") ? null : backend);
             if (model == null || model.isBlank()) {
                 throw new IllegalArgumentException("Set -Dshowcase.model=<model name>, e.g. qwen2.5-1.5b-instruct-q4_k_m");
             }
@@ -113,11 +116,13 @@ public final class Showcase {
                     Integer.getInteger("showcase.concurrency", 4),
                     Path.of(System.getProperty("showcase.cache", System.getProperty("user.home") + "/.cache/dukehoff-decide")),
                     Path.of(System.getProperty("showcase.out", "target/showcase/" + dataset
-                            + (backend.equals("linear") ? "-linear" : ""))),
+                            + (backend.equals("llm") ? "" : "-" + backend))),
                     Calibration.Method.valueOf(System.getProperty("showcase.calibrator", "best").toUpperCase(Locale.ROOT)),
                     backend,
                     Integer.getInteger("showcase.train", 3000),
-                    Double.parseDouble(System.getProperty("showcase.similarity", "1")));
+                    Double.parseDouble(System.getProperty("showcase.similarity", "1")),
+                    System.getProperty("showcase.embeddingUrl", "http://localhost:8081/v1"),
+                    System.getProperty("showcase.embeddingModel", "bge-m3"));
         }
     }
 
@@ -133,8 +138,9 @@ public final class Showcase {
         List<Example<T>> sample = ShowcaseDataset.sample(all, cfg.calibration() + cfg.test(), cfg.seed(), cfg.language());
         List<Example<T>> calibration = sample.subList(0, cfg.calibration());
         List<Example<T>> test = sample.subList(cfg.calibration(), sample.size());
-        if (cfg.backend().equals("linear")) {
-            runLinear(dataset, cfg, all, calibration, test);
+        if (!cfg.backend().equals("llm")) {
+            runTrained(dataset, cfg, all, calibration, test,
+                    cfg.backend().equals("linear") ? linearTrainer() : embeddingTrainer(cfg));
             return;
         }
 
@@ -157,9 +163,65 @@ public final class Showcase {
         write(cfg, report);
     }
 
-    /** Same splits and report as an LLM run, scored by a {@link LinearBackend} trained on disjoint examples. */
-    static <T> void runLinear(ShowcaseDataset<T> dataset, Config cfg, List<Example<T>> all,
-                              List<Example<T>> calibration, List<Example<T>> test) throws Exception {
+    /** Trains a backend without a prompt: features from the text, one logistic regression per field. */
+    interface Trainer {
+        /** Prefix of the model id, e.g. "linear-tfidf-lr". */
+        String id();
+
+        /** Markdown, for the report header. */
+        String description();
+
+        ScoringBackend train(String modelId, TaskSchema schema, List<State> states,
+                             List<Map<String, Integer>> targets, long seed);
+
+        /** Markdown paragraph about per-example cost beyond the classifier itself, may be empty. */
+        default String cost(List<State> examples) {
+            return "";
+        }
+    }
+
+    static Trainer linearTrainer() {
+        return new Trainer() {
+            public String id() { return "linear-tfidf-lr"; }
+            public String description() {
+                return "TF-IDF (word 1-2-grams, char 3-5-grams) + logistic regression per field";
+            }
+            public ScoringBackend train(String modelId, TaskSchema schema, List<State> states,
+                                        List<Map<String, Integer>> targets, long seed) {
+                return LinearBackend.train(modelId, schema, states, targets, seed);
+            }
+        };
+    }
+
+    static Trainer embeddingTrainer(Config cfg) {
+        EmbeddingBackend.Embedder embedder = new EmbeddingBackend.Embedder(cfg.embeddingUrl(), cfg.embeddingModel(),
+                cfg.apiKey(), cfg.cache().resolve("embeddings"), cfg.concurrency());
+        return new Trainer() {
+            public String id() { return "embed-" + embedder.model().replaceAll("[^A-Za-z0-9._-]+", "_") + "-lr"; }
+            public String description() {
+                return "embeddings from `" + embedder.model() + "` via `" + cfg.embeddingUrl()
+                        + "` (frozen) + logistic regression per field";
+            }
+            public ScoringBackend train(String modelId, TaskSchema schema, List<State> states,
+                                        List<Map<String, Integer>> targets, long seed) {
+                return EmbeddingBackend.train(modelId, embedder, schema, states, targets, seed);
+            }
+            public String cost(List<State> examples) {
+                double[] ms = embedder.timeSingle(examples.stream().limit(100).map(State::render).toList());
+                Arrays.sort(ms);
+                return String.format(Locale.ROOT, """
+                        The table above assumes the embedding is already computed (they are cached). Computing one \
+                        embedding (one request, one text, nothing else in flight), on %d examples: \
+                        p50 %.0f ms, p95 %.0f ms, mean %.0f ms.
+                        """, ms.length, percentile(ms, 0.5), percentile(ms, 0.95), Arrays.stream(ms).average().orElse(0));
+            }
+        };
+    }
+
+    /** Same splits and report as an LLM run, scored by a backend trained on examples outside both splits. */
+    static <T> void runTrained(ShowcaseDataset<T> dataset, Config cfg, List<Example<T>> all,
+                               List<Example<T>> calibration, List<Example<T>> test, Trainer trainer)
+            throws Exception {
         ShowcaseDataset.Rest<T> rest = ShowcaseDataset.rest(all, calibration.size() + test.size(), cfg.train(),
                 cfg.seed(), cfg.language(), cfg.similarity());
         List<Example<T>> training = rest.examples();
@@ -169,7 +231,8 @@ public final class Showcase {
         if (training.size() < cfg.train()) {
             System.err.printf(Locale.ROOT, "Only %d training examples available%n", training.size());
         }
-        TaskSchema schema = Decider.builder().backend(new ScriptedBackend("schema", (s, f) -> ScriptedBackend.uniform(f))).build().task(dataset.type()).schema();
+        TaskSchema schema = Decider.builder().backend(new ScriptedBackend("schema", (s, f) -> ScriptedBackend.uniform(f)))
+                .build().task(dataset.type()).schema();
 
         StringBuilder curve = new StringBuilder("\n## Training set size\n\n");
         curve.append("Accuracy on the test split (argmax, before calibration) by number of training examples. "
@@ -182,9 +245,9 @@ public final class Showcase {
         for (int n : new int[] {100, 300, 1000, 3000, 10000, 20000}) {
             if (n > training.size()) break;
             long start = System.nanoTime();
-            LinearBackend lb = train(dataset, schema, training.subList(0, n), cfg);
+            ScoringBackend b = train(dataset, schema, training.subList(0, n), cfg, trainer);
             long ms = (System.nanoTime() - start) / 1_000_000;
-            List<Decision<T>> d = Decider.builder().backend(lb).build().task(dataset.type())
+            List<Decision<T>> d = Decider.builder().backend(b).build().task(dataset.type())
                     .decideAll(test.stream().map(Example::state).toList());
             List<T> expected = test.stream().map(Example::label).toList();
             List<String> cells = new ArrayList<>(List.of(Integer.toString(n), ms + " ms"));
@@ -194,7 +257,7 @@ public final class Showcase {
         }
 
         long start = System.nanoTime();
-        LinearBackend backend = train(dataset, schema, training, cfg);
+        ScoringBackend backend = train(dataset, schema, training, cfg, trainer);
         long trainMillis = (System.nanoTime() - start) / 1_000_000;
 
         DecisionTask<T> uncalibrated = Decider.builder().backend(backend).build().task(dataset.type());
@@ -204,43 +267,42 @@ public final class Showcase {
         DecisionTask<T> calibrated = Decider.builder().backend(backend).calibration(store).build()
                 .task(dataset.type());
 
-        double[] micros = new double[calibration.size() + test.size()];
-        int i = 0;
-        for (Example<T> e : Stream.concat(calibration.stream(), test.stream()).toList()) {
+        List<State> sampleStates = Stream.concat(calibration.stream(), test.stream()).map(Example::state).toList();
+        backend.scoreAll(sampleStates.stream().map(st -> new ScoringRequest(st, schema)).toList());
+        double[] micros = new double[sampleStates.size()];
+        for (int i = 0; i < micros.length; i++) {
             long t0 = System.nanoTime();
-            backend.score(new ScoringRequest(e.state(), schema));
-            micros[i++] = (System.nanoTime() - t0) / 1e3;
+            backend.score(new ScoringRequest(sampleStates.get(i), schema));
+            micros[i] = (System.nanoTime() - t0) / 1e3;
         }
         Arrays.sort(micros);
         String latency = String.format(Locale.ROOT, """
 
                 ## Latency and cost
 
-                No model server. Training on %d examples took %d ms (all fields, one thread). \
+                Training on %d examples took %d ms (all fields, one thread, features already computed). \
                 Scoring one example (all fields, one thread, warm JVM):
 
                 | examples | p50 | p95 | mean |
                 |---:|---:|---:|---:|
                 | %d | %.0f µs | %.0f µs | %.0f µs |
 
-                Model size: %d hashed features × options per field, dense doubles in memory.
-                """, training.size(), trainMillis, micros.length, percentile(micros, 0.5), percentile(micros, 0.95),
-                Arrays.stream(micros).average().orElse(0), LinearBackend.DIM);
+                %s""", training.size(), trainMillis, micros.length, percentile(micros, 0.5), percentile(micros, 0.95),
+                Arrays.stream(micros).average().orElse(0), trainer.cost(test.stream().map(Example::state).toList()));
 
-        String model = String.format(Locale.ROOT, "`%s`: TF-IDF (word 1-2-grams, char 3-5-grams) + logistic "
-                + "regression per field, trained on %d disjoint examples (%d dropped as %s the splits)", backend.modelId(),
-                training.size(), rest.dropped(), filter);
+        String model = String.format(Locale.ROOT, "`%s`: %s, trained on %d disjoint examples (%d dropped as %s "
+                + "the splits)", backend.modelId(), trainer.description(), training.size(), rest.dropped(), filter);
         write(cfg, report(dataset, cfg, model, calibration, test, calibrated, fit, curve + latency));
     }
 
-    static <T> LinearBackend train(ShowcaseDataset<T> dataset, TaskSchema schema, List<Example<T>> training,
-                                   Config cfg) {
+    static <T> ScoringBackend train(ShowcaseDataset<T> dataset, TaskSchema schema, List<Example<T>> training,
+                                    Config cfg, Trainer trainer) {
         List<Map<String, Integer>> targets = training.stream().map(e -> {
             Map<String, Integer> t = new LinkedHashMap<>();
             for (FieldSpec f : schema.fields()) t.put(f.name(), optionIndex(dataset.fields().get(f.name()).apply(e.label())));
             return t;
         }).toList();
-        return LinearBackend.train("linear-tfidf-lr-" + training.size() + "-seed" + cfg.seed(), schema,
+        return trainer.train(trainer.id() + "-" + training.size() + "-seed" + cfg.seed(), schema,
                 training.stream().map(Example::state).toList(), targets, cfg.seed());
     }
 

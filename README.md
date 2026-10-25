@@ -120,7 +120,9 @@ showcase they reached 82.0% and 87.7% category accuracy on the same messages. Gi
 From `dukehoff-decide-showcase` (2026-10-25), Qwen2.5-Instruct (Q4_K_M) via a native llama.cpp server on an
 M1 Pro, 300 calibration and 300 disjoint test examples per run (seed 42). For comparison, a linear baseline without
 any language model (`-Dshowcase.backend=linear`): TF-IDF features and logistic regression per field, trained on
-examples that occur in neither split.
+examples that occur in neither split. And the same classifier on sentence embeddings (`-Dshowcase.backend=embedding`,
+[bge-m3](https://huggingface.co/BAAI/bge-m3) or Qwen3-Embedding-0.6B via llama.cpp): a frozen pretrained encoder turns
+each text into one vector that also captures context, and only the logistic regression on top is trained.
 
 **Customer messages** ([Bitext](https://huggingface.co/datasets/bitext/Bitext-customer-support-llm-chatbot-training-dataset),
 11 categories plus an "offensive language" flag), labels follow from the text. Temperature only → with per-option
@@ -143,20 +145,21 @@ The linear baseline needs labelled data instead of a prompt: 86% category accura
 98.3% with 300, 100% from 3,000. That is not memorised near-copies: with every training message dropped whose
 character-trigram similarity (Jaccard) to a calibration or test message is 0.4 or more (`-Dshowcase.similarity=0.4`,
 three quarters of the candidates), it still reaches 99% from 1,000 examples. Bitext categories are named by a few
-words ("invoice", "refund", "shipping address"), which is easy for word counts.
+words ("invoice", "refund", "shipping address"), which is easy for word counts. Embeddings reach the same: 100%
+(bge-m3) and 99.7% (Qwen3-Embedding).
 
 **Voice assistant requests** ([Amazon MASSIVE 1.1](https://github.com/alexa/massive), CC BY 4.0, crowd-written,
 18 scenarios such as alarm, calendar, music, weather; German is translated from English, so each language runs on
 its own). Harder than Bitext: the scenario is often implied, not named. Temperature only → with per-option bias:
 
-| | 1.5B | 7B | linear, ~15,900 training examples | most frequent label |
-|---|---:|---:|---:|---:|
-| accuracy, English | 64.3% → 73.3% | 77.3% → 83.0% | 88.3% | 12.0% |
-| accuracy, German | 59.7% → 68.0% | 74.3% → 78.3% | 85.0% | 12.0% |
-| decided at threshold 0.9, English | 31% → 43% | 37% → 58% | 80% | |
-| accuracy of those | 84.8% → 86.7% | 96.4% → 93.1% | 95.9% | |
-| decided at threshold 0.9, German | 22% → 30% | 28% → 50% | 73% | |
-| accuracy of those | 82.1% → 91.2% | 94.0% → 89.4% | 96.3% | |
+| | 1.5B | 7B | linear, ~15,900 training examples | bge-m3 + linear | most frequent label |
+|---|---:|---:|---:|---:|---:|
+| accuracy, English | 64.3% → 73.3% | 77.3% → 83.0% | 88.3% | 88.3% | 12.0% |
+| accuracy, German | 59.7% → 68.0% | 74.3% → 78.3% | 85.0% | 88.0% | 12.0% |
+| decided at threshold 0.9, English | 31% → 43% | 37% → 58% | 80% | 80% | |
+| accuracy of those | 84.8% → 86.7% | 96.4% → 93.1% | 95.9% | 96.7% | |
+| decided at threshold 0.9, German | 22% → 30% | 28% → 50% | 73% | 70% | |
+| accuracy of those | 82.1% → 91.2% | 94.0% → 89.4% | 96.3% | 95.7% | |
 
 Here the number of labels decides. The linear model's accuracy by number of training examples (English / German):
 51% / 51% with 100, 66% / 67% with 300, 78% / 76% with 1,000, 82% / 80% with 3,000, 88% / 87% with 10,000. With
@@ -164,23 +167,44 @@ the 300 labelled examples that calibration needs anyway, the language models are
 catches up with the 1.5B model at about 1,000 examples and with the 7B model at about 3,000. The bias mostly
 pushes the models away from `GENERAL` (small talk) and towards `PLAY`; `QA` vs. `GENERAL` is the most common
 confusion. With bias, the 7B model decides more requests at threshold 0.9 but those are slightly less accurate,
-so check `thresholdFor` rather than reusing a threshold.
+so check `thresholdFor` rather than reusing a threshold. Embeddings need fewer labels than word counts (bge-m3:
+67% / 62% with 100, 77% / 70% with 300, 82% / 79% with 1,000) and, being multilingual, hold up better in German.
+Qwen3-Embedding gets 90.3% / 85.7%. Computing one embedding takes 16–24 ms on the M1 Pro.
 
 **Support tickets** ([Tobi-Bueck/customer-support-tickets](https://huggingface.co/datasets/Tobi-Bueck/customer-support-tickets),
 synthetic, type/queue/priority), where many labels cannot be inferred from the text. Accuracy after calibration:
 
-| | 1.5B | 7B | linear, 19,398 training examples | most frequent label |
-|---|---:|---:|---:|---:|
-| type | 65.3% | 60.7% | 83.7% | 38.3% |
-| queue | 33.0% | 26.3% | 54.0% | 26.3% |
-| priority | 39.7% | 38.3% | 59.3% | 39.0% |
+| | 1.5B | 7B | linear, 19,398 training examples | bge-m3 + linear | most frequent label |
+|---|---:|---:|---:|---:|---:|
+| type | 65.3% | 60.7% | 83.7% | 79.7% | 38.3% |
+| queue | 33.0% | 26.3% | 54.0% | 44.0% | 26.3% |
+| priority | 39.7% | 38.3% | 59.3% | 39.3% | 39.0% |
 
 The language models barely beat always guessing the most frequent label on `queue` and `priority`, yet often
 claim over 99% confidence: raw scores would auto-route 42% (1.5B) to 65% (7B) of tickets at threshold 0.9, with
 under 10% of them fully correct. After calibration, none are auto-routed, which is the right answer. The
 calibration report flags `queue` and `priority` ("temperature at the limit") and the options that collect most
 errors. The linear model learns how this dataset assigns queues and priorities, which no prompt describes, but
-it is not good enough to auto-route whole tickets either.
+it is not good enough to auto-route whole tickets either. Embeddings do worse than word counts here (Qwen3-Embedding:
+76.3% / 42.0% / 43.3%): whatever decides queue and priority in this synthetic data is in the words, not the meaning.
+
+**Consumer complaints** ([CFPB consumer complaint narratives](https://www.consumerfinance.gov/data-research/consumer-complaints/),
+public domain, written by real consumers to the US Consumer Financial Protection Bureau, from the archived export
+September 2023 to March 2024; 10 financial products, 2,500 complaints sampled per product). The longest texts
+(median 117 words, cut at 4,000 characters):
+
+| | 1.5B | 7B | linear, 20,000 training examples | bge-m3 + linear | Qwen3-Embedding + linear | most frequent label |
+|---|---:|---:|---:|---:|---:|---:|
+| accuracy | 64.0% → 65.7% | 70.3% → 74.3% | 78.0% | 82.3% | 80.7% | 10.7% |
+| decided at threshold 0.9 | 5% | 8% → 23% | 50% | 46% | 48% | |
+| accuracy of those | 71.4% → 100% | 100% → 98.5% | 97.3% | 97.1% | 96.6% | |
+| time per complaint | 0.38 s | 1.8 s | 0.4 ms | 54 ms | 105 ms | |
+
+The only dataset where embeddings beat word counts, by 2–4 points. Both need data for it: with 300 training
+examples, word counts get 56% and embeddings 67–70%, below the 7B model; at 3,000, all three are at 73–74%. Every
+method confuses money transfers with checking accounts most often, and many complaints are about both. Times for
+the language models are wall time over the run with four complaints in flight; for embeddings, one request with
+nothing else in flight.
 
 ## Limitations
 
@@ -275,13 +299,17 @@ mvn -q -pl showcase exec:java -Dshowcase.dataset=bitext -Dshowcase.model=qwen2.5
 The report goes to `target/showcase/<dataset>/report.md` (relative to where Maven runs). Raw scores are cached in
 `~/.cache/dukehoff-decide/scores`, so re-runs only query the model for new examples. On a laptop, keep the machine awake
 during long runs (`caffeinate -i mvn ...` on macOS); requests in flight when it sleeps time out.
-Options: `-Dshowcase.dataset=tickets|bitext|massive` (massive needs `-Dshowcase.language=en` or `de`), `-Dshowcase.calibration=300`, `-Dshowcase.test=300`,
+Options: `-Dshowcase.dataset=tickets|bitext|massive|cfpb` (massive needs `-Dshowcase.language=en` or `de`), `-Dshowcase.calibration=300`, `-Dshowcase.test=300`,
 `-Dshowcase.language=all|en|de`, `-Dshowcase.seed=42`, `-Dshowcase.baseUrl=...`, `-Dshowcase.apiKey=...`.
 `-Dshowcase.backend=linear` (with `-Dshowcase.train=3000`) needs no model: it trains a TF-IDF + logistic
 regression baseline on examples outside both splits and writes the same report to `target/showcase/<dataset>-linear`;
 `-Dshowcase.similarity=0.6` also drops training examples that resemble a calibration or test example.
+`-Dshowcase.backend=embedding` trains the same classifier on embeddings from an OpenAI-compatible `/v1/embeddings`
+endpoint (`-Dshowcase.embeddingUrl=http://localhost:8081/v1`, `-Dshowcase.embeddingModel=bge-m3`), for example
+`llama-server -hf ggml-org/bge-m3-Q8_0-GGUF --embeddings --port 8081 -ub 8192 -b 8192`; vectors are cached in
+`~/.cache/dukehoff-decide/embeddings`.
 Datasets are downloaded on first run and keep their own licenses (tickets: CC BY-NC 4.0, Bitext: CDLA-Sharing-1.0,
-MASSIVE: CC BY 4.0).
+MASSIVE: CC BY 4.0, CFPB: public domain).
 
 ## Build
 
