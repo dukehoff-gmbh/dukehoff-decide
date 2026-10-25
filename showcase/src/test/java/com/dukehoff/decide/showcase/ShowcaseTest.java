@@ -83,8 +83,26 @@ class ShowcaseTest {
     }
 
     @Test
+    void parsesMassiveScenarios() throws Exception {
+        String jsonl = """
+                {"id": "0", "locale": "de-DE", "partition": "test", "scenario": "iot", "intent": "iot_coffee", \
+                "utt": "mach mir einen kaffee", "annot_utt": "mach mir einen kaffee", "worker_id": "1"}
+
+                {"id": "1", "locale": "de-DE", "partition": "train", "scenario": "qa", "intent": "qa_factoid", \
+                "utt": "wie hoch ist die zugspitze", "annot_utt": "wie hoch ist die zugspitze", "worker_id": "2"}
+                """;
+        List<Example<AssistantRequest>> r = MassiveDataset.parse(
+                new java.io.ByteArrayInputStream(jsonl.getBytes(java.nio.charset.StandardCharsets.UTF_8)), "de");
+        assertEquals(2, r.size());
+        assertEquals(new AssistantRequest(AssistantRequest.Scenario.IOT), r.get(0).label());
+        assertEquals(AssistantRequest.Scenario.QA, r.get(1).label().scenario());
+        assertEquals("mach mir einen kaffee", r.get(0).state().render());
+        assertEquals("de", r.get(0).language());
+    }
+
+    @Test
     void everyDatasetMapsToAValidSchema() {
-        for (String id : List.of("tickets", "bitext")) {
+        for (String id : List.of("tickets", "bitext", "massive")) {
             ShowcaseDataset<?> ds = ShowcaseDataset.byId(id);
             var schema = Decider.builder().backend(new ScriptedBackend("s", (s, f) -> ScriptedBackend.uniform(f)))
                     .build().task(ds.type()).schema();
@@ -135,5 +153,31 @@ class ShowcaseTest {
 
     private static Example<Triage> example(Triage t) {
         return new Example<>(State.of("body"), t, "en");
+    }
+
+    @Test
+    void linearBackendLearnsSeparableCategoriesAndRestIsDisjoint() {
+        var schema = Decider.builder().backend(new ScriptedBackend("s", (s, f) -> ScriptedBackend.uniform(f)))
+                .build().task(CustomerRequest.class).schema();
+        List<Example<CustomerRequest>> all = new java.util.ArrayList<>();
+        for (int i = 0; i < 40; i++) {
+            all.add(new Example<>(State.of("where is my invoice number " + i), new CustomerRequest(
+                    CustomerRequest.Category.INVOICE, false), "en"));
+            all.add(new Example<>(State.of("damn, change my shipping address to street " + i), new CustomerRequest(
+                    CustomerRequest.Category.SHIPPING, true), "en"));
+        }
+        List<Example<CustomerRequest>> sample = ShowcaseDataset.sample(all, 10, 1, "all");
+        ShowcaseDataset.Rest<CustomerRequest> rest = ShowcaseDataset.rest(all, 10, 1000, 1, "all", 1);
+        List<Example<CustomerRequest>> training = rest.examples();
+        assertEquals(70, training.size());
+        assertEquals(0, rest.dropped());
+        // "number 1" vs. "number 12" and the like: every candidate resembles some sampled message
+        assertTrue(ShowcaseDataset.rest(all, 10, 1000, 1, "all", 0.5).dropped() > 0);
+        assertTrue(training.stream().noneMatch(sample::contains));
+
+        LinearBackend lb = Showcase.train(new BitextDataset(), schema, training,
+                new Showcase.Config("bitext", null, "linear", null, 0, 0, 1, "all", 1, null, null, null, "linear", 70, 1));
+        DecisionTask<CustomerRequest> task = Decider.builder().backend(lb).build().task(CustomerRequest.class);
+        for (Example<CustomerRequest> e : sample) assertEquals(e.label(), task.decide(e.state()).value());
     }
 }

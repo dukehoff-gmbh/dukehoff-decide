@@ -29,10 +29,13 @@ import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Random;
+import java.util.Set;
 import java.util.function.Function;
 
 /** A labelled public dataset and the typed decision it is mapped to. */
@@ -65,17 +68,65 @@ interface ShowcaseDataset<T> {
         return switch (id) {
             case "tickets" -> new TicketDataset();
             case "bitext" -> new BitextDataset();
-            default -> throw new IllegalArgumentException("Unknown dataset '" + id + "', use tickets or bitext");
+            case "massive" -> new MassiveDataset();
+            default -> throw new IllegalArgumentException("Unknown dataset '" + id + "', use tickets, bitext or massive");
         };
     }
 
     /** Deterministic shuffle, then the first {@code n} examples (optionally of one language). */
     static <T> List<Example<T>> sample(List<Example<T>> all, int n, long seed, String language) {
+        List<Example<T>> pool = shuffled(all, seed, language);
+        if (pool.size() < n) throw new IllegalArgumentException("only " + pool.size() + " examples available");
+        return List.copyOf(pool.subList(0, n));
+    }
+
+    /** Training examples and how many candidates were dropped for resembling the sample. */
+    record Rest<T>(List<Example<T>> examples, int dropped) {}
+
+    /**
+     * Up to {@code max} examples that {@link #sample} with the same {@code n}, seed and language did not pick,
+     * skipping any whose character-trigram Jaccard similarity to an example of the sample is at least
+     * {@code maxSimilarity} (1 drops only exact duplicates after normalising case and whitespace).
+     */
+    static <T> Rest<T> rest(List<Example<T>> all, int n, int max, long seed, String language, double maxSimilarity) {
+        List<Example<T>> pool = shuffled(all, seed, language);
+        List<Set<Integer>> taken = pool.subList(0, n).stream().map(e -> trigrams(e.state().render())).toList();
+        Map<Integer, List<Integer>> index = new HashMap<>();
+        for (int i = 0; i < taken.size(); i++) {
+            for (int g : taken.get(i)) index.computeIfAbsent(g, k -> new ArrayList<>()).add(i);
+        }
+        List<Example<T>> out = new ArrayList<>();
+        int dropped = 0;
+        for (Example<T> e : pool.subList(n, pool.size())) {
+            if (out.size() == max) break;
+            Set<Integer> grams = trigrams(e.state().render());
+            Map<Integer, Integer> shared = new HashMap<>();
+            for (int g : grams) {
+                for (int i : index.getOrDefault(g, List.of())) shared.merge(i, 1, Integer::sum);
+            }
+            boolean similar = shared.entrySet().stream().anyMatch(s -> {
+                int union = grams.size() + taken.get(s.getKey()).size() - s.getValue();
+                return (double) s.getValue() / union >= maxSimilarity;
+            });
+            if (similar) dropped++;
+            else out.add(e);
+        }
+        return new Rest<>(List.copyOf(out), dropped);
+    }
+
+    /** Hashes of the character trigrams of the normalised text (case and whitespace runs ignored). */
+    static Set<Integer> trigrams(String text) {
+        String t = ' ' + text.strip().toLowerCase(Locale.ROOT).replaceAll("\\s+", " ") + ' ';
+        Set<Integer> grams = new HashSet<>();
+        for (int i = 0; i + 3 <= t.length(); i++) grams.add(t.substring(i, i + 3).hashCode());
+        return grams;
+    }
+
+    private static <T> List<Example<T>> shuffled(List<Example<T>> all, long seed, String language) {
         List<Example<T>> pool = new ArrayList<>(language == null || language.equals("all") ? all
                 : all.stream().filter(e -> language.equals(e.language())).toList());
         Collections.shuffle(pool, new Random(seed));
-        if (pool.size() < n) throw new IllegalArgumentException("only " + pool.size() + " examples available");
-        return List.copyOf(pool.subList(0, n));
+        return pool;
     }
 
     /** Dataset label to enum constant: "Service Outages and Maintenance" -&gt; SERVICE_OUTAGES_AND_MAINTENANCE */

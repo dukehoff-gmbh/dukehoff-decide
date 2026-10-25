@@ -28,8 +28,10 @@ import com.dukehoff.decide.calibration.Confusion;
 import com.dukehoff.decide.calibration.Coverage;
 import com.dukehoff.decide.openai.OpenAiBackend;
 import com.dukehoff.decide.showcase.ShowcaseDataset.Example;
+import com.dukehoff.decide.spi.FieldSpec;
 import com.dukehoff.decide.spi.ScoringBackend.ScoringRequest;
 import com.dukehoff.decide.spi.TaskSchema;
+import com.dukehoff.decide.testing.ScriptedBackend;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -49,6 +51,7 @@ import java.util.concurrent.Future;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Function;
 import java.util.stream.Collectors;
+import java.util.stream.Stream;
 
 /**
  * Runs a {@link ShowcaseDataset} end to end: fits temperature calibration on one split, then reports
@@ -61,12 +64,18 @@ import java.util.stream.Collectors;
  * mvn -q -pl showcase exec:java -Dshowcase.dataset=bitext -Dshowcase.model=qwen2.5-1.5b-instruct-q4_k_m
  * </pre>
  *
- * Settings (system properties): {@code showcase.dataset} (tickets, bitext; default tickets),
+ * Settings (system properties): {@code showcase.dataset} (tickets, bitext, massive; default tickets),
  * {@code showcase.baseUrl} (default http://localhost:8080/v1), {@code showcase.model}, {@code showcase.apiKey},
  * {@code showcase.calibration} (examples, default 300), {@code showcase.test} (default 300), {@code showcase.seed} (42),
  * {@code showcase.language} (all, en, de), {@code showcase.concurrency} (examples in flight, default 4),
  * {@code showcase.cache} (default ~/.cache/dukehoff-decide), {@code showcase.out} (default target/showcase/&lt;dataset&gt;),
- * {@code showcase.calibrator} (best, temperature; default best).
+ * {@code showcase.calibrator} (best, temperature; default best),
+ * {@code showcase.backend} (llm, linear; default llm), {@code showcase.train} (linear only: training examples,
+ * disjoint from both splits, default 3000), {@code showcase.similarity} (linear only: drop training examples whose
+ * character-trigram Jaccard similarity to a calibration or test example reaches this; default 1, exact duplicates).
+ *
+ * <p>{@code linear} needs no model: it trains {@link LinearBackend} (TF-IDF + logistic regression) on examples the
+ * calibration and test splits don't contain, so its report is directly comparable with an LLM run on the same seed.
  */
 public final class Showcase {
 
@@ -75,14 +84,23 @@ public final class Showcase {
     static final double[] THRESHOLDS = {0.5, 0.6, 0.7, 0.8, 0.9, 0.95, 0.99};
 
     record Config(String dataset, String baseUrl, String model, String apiKey, int calibration, int test, long seed,
-                  String language, int concurrency, Path cache, Path out, Calibration.Method method) {
+                  String language, int concurrency, Path cache, Path out, Calibration.Method method,
+                  String backend, int train, double similarity) {
 
         static Config fromSystemProperties() {
-            String model = System.getProperty("showcase.model");
+            String backend = System.getProperty("showcase.backend", "llm");
+            if (!backend.equals("llm") && !backend.equals("linear")) {
+                throw new IllegalArgumentException("Unknown backend '" + backend + "', use llm or linear");
+            }
+            String model = System.getProperty("showcase.model", backend.equals("linear") ? "linear" : null);
             if (model == null || model.isBlank()) {
                 throw new IllegalArgumentException("Set -Dshowcase.model=<model name>, e.g. qwen2.5-1.5b-instruct-q4_k_m");
             }
             String dataset = System.getProperty("showcase.dataset", "tickets");
+            if (dataset.equals("massive") && System.getProperty("showcase.language", "all").equals("all")) {
+                throw new IllegalArgumentException("MASSIVE's German rows translate the English ones; "
+                        + "set -Dshowcase.language=en or de");
+            }
             return new Config(
                     dataset,
                     System.getProperty("showcase.baseUrl", "http://localhost:8080/v1"),
@@ -94,8 +112,12 @@ public final class Showcase {
                     System.getProperty("showcase.language", "all"),
                     Integer.getInteger("showcase.concurrency", 4),
                     Path.of(System.getProperty("showcase.cache", System.getProperty("user.home") + "/.cache/dukehoff-decide")),
-                    Path.of(System.getProperty("showcase.out", "target/showcase/" + dataset)),
-                    Calibration.Method.valueOf(System.getProperty("showcase.calibrator", "best").toUpperCase(Locale.ROOT)));
+                    Path.of(System.getProperty("showcase.out", "target/showcase/" + dataset
+                            + (backend.equals("linear") ? "-linear" : ""))),
+                    Calibration.Method.valueOf(System.getProperty("showcase.calibrator", "best").toUpperCase(Locale.ROOT)),
+                    backend,
+                    Integer.getInteger("showcase.train", 3000),
+                    Double.parseDouble(System.getProperty("showcase.similarity", "1")));
         }
     }
 
@@ -111,6 +133,10 @@ public final class Showcase {
         List<Example<T>> sample = ShowcaseDataset.sample(all, cfg.calibration() + cfg.test(), cfg.seed(), cfg.language());
         List<Example<T>> calibration = sample.subList(0, cfg.calibration());
         List<Example<T>> test = sample.subList(cfg.calibration(), sample.size());
+        if (cfg.backend().equals("linear")) {
+            runLinear(dataset, cfg, all, calibration, test);
+            return;
+        }
 
         OpenAiBackend.Builder b = OpenAiBackend.builder().baseUrl(cfg.baseUrl()).model(cfg.model())
                 .maxConcurrency(cfg.concurrency() * dataset.fields().size());
@@ -126,7 +152,108 @@ public final class Showcase {
         DecisionTask<T> calibrated = Decider.builder().backend(backend).calibration(store).build()
                 .task(dataset.type());
 
-        String report = report(dataset, cfg, calibration, test, calibrated, fit, latency);
+        String model = "`" + cfg.model() + "` via `" + cfg.baseUrl() + "`";
+        String report = report(dataset, cfg, model, calibration, test, calibrated, fit, llmLatency(dataset, cfg, latency));
+        write(cfg, report);
+    }
+
+    /** Same splits and report as an LLM run, scored by a {@link LinearBackend} trained on disjoint examples. */
+    static <T> void runLinear(ShowcaseDataset<T> dataset, Config cfg, List<Example<T>> all,
+                              List<Example<T>> calibration, List<Example<T>> test) throws Exception {
+        ShowcaseDataset.Rest<T> rest = ShowcaseDataset.rest(all, calibration.size() + test.size(), cfg.train(),
+                cfg.seed(), cfg.language(), cfg.similarity());
+        List<Example<T>> training = rest.examples();
+        String filter = cfg.similarity() >= 1 ? "exact duplicates of" : String.format(Locale.ROOT,
+                "examples with character-trigram Jaccard similarity of at least %.2f to", cfg.similarity());
+        System.err.printf(Locale.ROOT, "Dropped %d training candidates as %s the sample%n", rest.dropped(), filter);
+        if (training.size() < cfg.train()) {
+            System.err.printf(Locale.ROOT, "Only %d training examples available%n", training.size());
+        }
+        TaskSchema schema = Decider.builder().backend(new ScriptedBackend("schema", (s, f) -> ScriptedBackend.uniform(f))).build().task(dataset.type()).schema();
+
+        StringBuilder curve = new StringBuilder("\n## Training set size\n\n");
+        curve.append("Accuracy on the test split (argmax, before calibration) by number of training examples. "
+                + "Training examples never occur in the calibration or test split; " + rest.dropped()
+                + " candidates were dropped as " + filter + " an example in either split.\n\n");
+        List<String> names = new ArrayList<>(targets(dataset).keySet());
+        curve.append(row(Stream.concat(Stream.of("training examples", "train time"),
+                names.stream()).toArray(String[]::new)));
+        curve.append("|---:|---:|").append("---:|".repeat(names.size())).append('\n');
+        for (int n : new int[] {100, 300, 1000, 3000, 10000, 20000}) {
+            if (n > training.size()) break;
+            long start = System.nanoTime();
+            LinearBackend lb = train(dataset, schema, training.subList(0, n), cfg);
+            long ms = (System.nanoTime() - start) / 1_000_000;
+            List<Decision<T>> d = Decider.builder().backend(lb).build().task(dataset.type())
+                    .decideAll(test.stream().map(Example::state).toList());
+            List<T> expected = test.stream().map(Example::label).toList();
+            List<String> cells = new ArrayList<>(List.of(Integer.toString(n), ms + " ms"));
+            targets(dataset).values().forEach(get -> cells.add(pct(accuracy(d, expected, get))));
+            curve.append(row(cells.toArray(String[]::new)));
+            System.err.printf(Locale.ROOT, "  trained on %d examples in %d ms%n", n, ms);
+        }
+
+        long start = System.nanoTime();
+        LinearBackend backend = train(dataset, schema, training, cfg);
+        long trainMillis = (System.nanoTime() - start) / 1_000_000;
+
+        DecisionTask<T> uncalibrated = Decider.builder().backend(backend).build().task(dataset.type());
+        CalibrationReport fit = Calibration.fit(uncalibrated, labeled(calibration), labeled(test), cfg.method());
+        CalibrationStore store = CalibrationStore.directory(cfg.out().resolve("calibration"));
+        store.save(fit.profile());
+        DecisionTask<T> calibrated = Decider.builder().backend(backend).calibration(store).build()
+                .task(dataset.type());
+
+        double[] micros = new double[calibration.size() + test.size()];
+        int i = 0;
+        for (Example<T> e : Stream.concat(calibration.stream(), test.stream()).toList()) {
+            long t0 = System.nanoTime();
+            backend.score(new ScoringRequest(e.state(), schema));
+            micros[i++] = (System.nanoTime() - t0) / 1e3;
+        }
+        Arrays.sort(micros);
+        String latency = String.format(Locale.ROOT, """
+
+                ## Latency and cost
+
+                No model server. Training on %d examples took %d ms (all fields, one thread). \
+                Scoring one example (all fields, one thread, warm JVM):
+
+                | examples | p50 | p95 | mean |
+                |---:|---:|---:|---:|
+                | %d | %.0f µs | %.0f µs | %.0f µs |
+
+                Model size: %d hashed features × options per field, dense doubles in memory.
+                """, training.size(), trainMillis, micros.length, percentile(micros, 0.5), percentile(micros, 0.95),
+                Arrays.stream(micros).average().orElse(0), LinearBackend.DIM);
+
+        String model = String.format(Locale.ROOT, "`%s`: TF-IDF (word 1-2-grams, char 3-5-grams) + logistic "
+                + "regression per field, trained on %d disjoint examples (%d dropped as %s the splits)", backend.modelId(),
+                training.size(), rest.dropped(), filter);
+        write(cfg, report(dataset, cfg, model, calibration, test, calibrated, fit, curve + latency));
+    }
+
+    static <T> LinearBackend train(ShowcaseDataset<T> dataset, TaskSchema schema, List<Example<T>> training,
+                                   Config cfg) {
+        List<Map<String, Integer>> targets = training.stream().map(e -> {
+            Map<String, Integer> t = new LinkedHashMap<>();
+            for (FieldSpec f : schema.fields()) t.put(f.name(), optionIndex(dataset.fields().get(f.name()).apply(e.label())));
+            return t;
+        }).toList();
+        return LinearBackend.train("linear-tfidf-lr-" + training.size() + "-seed" + cfg.seed(), schema,
+                training.stream().map(Example::state).toList(), targets, cfg.seed());
+    }
+
+    /** Option order of {@link FieldSpec}: yes before no, enum constants in ordinal order. */
+    static int optionIndex(Object value) {
+        return switch (value) {
+            case Boolean b -> b ? 0 : 1;
+            case Enum<?> e -> e.ordinal();
+            default -> throw new IllegalArgumentException("unsupported field value " + value);
+        };
+    }
+
+    private static void write(Config cfg, String report) throws Exception {
         Files.createDirectories(cfg.out());
         Path file = cfg.out().resolve("report.md");
         Files.writeString(file, report);
@@ -187,9 +314,9 @@ public final class Showcase {
 
     // ---------------------------------------------------------------------------------------- report
 
-    static <T> String report(ShowcaseDataset<T> dataset, Config cfg, List<Example<T>> calibration,
+    static <T> String report(ShowcaseDataset<T> dataset, Config cfg, String model, List<Example<T>> calibration,
                              List<Example<T>> test, DecisionTask<T> calibrated,
-                             CalibrationReport fit, Latency latency) {
+                             CalibrationReport fit, String latency) {
         List<State> states = test.stream().map(Example::state).toList();
         List<T> expected = test.stream().map(Example::label).toList();
         List<Decision<T>> decisions = calibrated.decideAll(states);
@@ -198,14 +325,14 @@ public final class Showcase {
         StringBuilder md = new StringBuilder();
         md.append("# dukehoff-decide showcase: ").append(dataset.title()).append("\n\n");
         md.append(String.format(Locale.ROOT, """
-                - Model: `%s` via `%s`
+                - Model: %s
                 - Data: %s, language: %s
                 - Output type: `%s`
                 - Split: %d examples for calibration, %d disjoint examples for testing (seed %d)
                 - Calibrators allowed: %s
                 - Date: %s
 
-                """, cfg.model(), cfg.baseUrl(), dataset.citation(), cfg.language(), dataset.type().getSimpleName(),
+                """, model, dataset.citation(), cfg.language(), dataset.type().getSimpleName(),
                 calibration.size(), test.size(), cfg.seed(),
                 cfg.method() == Calibration.Method.BEST ? "temperature, or temperature + bias if better on the test split"
                         : "temperature only",
@@ -284,9 +411,13 @@ public final class Showcase {
             }
         }
 
+        md.append(latency);
+        return md.toString();
+    }
+
+    static <T> String llmLatency(ShowcaseDataset<T> dataset, Config cfg, Latency latency) {
         int fields = dataset.fields().size();
-        md.append("\n## Latency and cost\n\n");
-        md.append(String.format(Locale.ROOT, """
+        return "\n## Latency and cost\n\n" + String.format(Locale.ROOT, """
                 One request per field, %d per example, each generating a single token. \
                 Latency per example (fields scored concurrently, %d examples in flight, so this includes queueing):
 
@@ -299,8 +430,7 @@ public final class Showcase {
                 """, fields, cfg.concurrency(), latency.examples(), latency.p50(), latency.p95(), latency.mean(),
                 Double.isNaN(latency.perSecond()) ? "cached"
                         : String.format(Locale.ROOT, "%.2f examples/s", latency.perSecond()),
-                fields));
-        return md.toString();
+                fields);
     }
 
     /** Every field, then the whole record. */
