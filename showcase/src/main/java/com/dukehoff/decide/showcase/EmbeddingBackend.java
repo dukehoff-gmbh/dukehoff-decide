@@ -110,7 +110,7 @@ final class EmbeddingBackend implements ScoringBackend {
         double[] x = standardise(embedder.embed(request.state().render()), mean, scale);
         Map<String, RawScores> out = new LinkedHashMap<>();
         for (FieldSpec f : request.schema().fields()) {
-            out.put(f.name(), new RawScores(LinearBackend.logSoftmax(logits(weights.get(f.name()), x))));
+            out.put(f.name(), new RawScores(logSoftmax(logits(weights.get(f.name()), x))));
         }
         return out;
     }
@@ -142,7 +142,7 @@ final class EmbeddingBackend implements ScoringBackend {
             }
             for (int n : order) {
                 double[] xi = x.get(n);
-                double[] p = LinearBackend.softmax(logits(w, xi));
+                double[] p = softmax(logits(w, xi));
                 for (int k = 0; k < classes; k++) {
                     double err = p[k] - (k == y[n] ? 1 : 0);
                     double[] wk = w[k], gk = g2[k];
@@ -157,6 +157,19 @@ final class EmbeddingBackend implements ScoringBackend {
             }
         }
         return w;
+    }
+
+    static double[] softmax(double[] z) {
+        double[] p = logSoftmax(z);
+        for (int k = 0; k < p.length; k++) p[k] = Math.exp(p[k]);
+        return p;
+    }
+
+    static double[] logSoftmax(double[] z) {
+        double max = Arrays.stream(z).max().orElse(0), sum = 0;
+        for (double v : z) sum += Math.exp(v - max);
+        double log = max + Math.log(sum);
+        return Arrays.stream(z).map(v -> v - log).toArray();
     }
 
     static double[] logits(double[][] w, double[] x) {

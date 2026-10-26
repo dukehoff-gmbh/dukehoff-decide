@@ -27,7 +27,8 @@ import java.util.Map;
  * <ul>
  *   <li>Logprob backends (llama.cpp, Ollama, vLLM, OpenAI): prompt per field (or one prompt for all
  *       fields), read the log-probabilities of the option labels as the next token.</li>
- *   <li>Fine-tuned backends: one forward pass, one classification head per field.</li>
+ *   <li>Trained classifiers: {@code LinearClassifier} in {@code dukehoff-decide-classifier} (TF-IDF + logistic
+ *       regression per field), or a fine-tuned model with one classification head per field.</li>
  *   <li>{@link com.dukehoff.decide.testing.ScriptedBackend} for unit tests.</li>
  * </ul>
  * Backends return raw scores; calibration happens above this layer so that backends stay dumb.

@@ -4,12 +4,18 @@
 
 # dukehoff-decide
 
-Type-safe, calibrated decisions from small language models, for Java.
+Type-safe, calibrated decisions for Java, from small language models or from classifiers trained on your own data.
 
 Many LLM integrations ask a large model a question whose answer is really one of a few options:
 "which team handles this ticket", "is this spam", "how relevant is this document". dukehoff-decide turns
-such a question into a Java type and answers it using a small (local) model. Instead of text, you
-get a typed value plus probabilities you can rely on, and a gate that sends uncertain cases to a human.
+such a question into a Java type. Instead of text, you get a typed value plus probabilities you can rely on,
+and a gate that sends uncertain cases to a human.
+
+Who answers the question is a pluggable backend. With no labelled data, a small (local) language model
+answers it from the question and option descriptions alone. Once you have a few thousand labelled cases, a
+classifier trained on them is usually more accurate and much faster (see [Results](#results)).
+Calibration, gating and diagnostics are the same either way, so you can start with a language model and
+switch when the labels are there, without changing the code that uses the decisions.
 
 ```java
 @Question("Triage an incoming customer support ticket")
@@ -37,9 +43,10 @@ switch (triage.requireConfidence(Map.of("priority", 0.7, "churnRisk", 0.9)).deci
 1. **Schema.** The output type is reflected into questions. Every field becomes "pick one of N options":
    a boolean is yes/no, an enum has one option per constant (described with `@Option`), and a `@Scale`
    has one option per step.
-2. **Backend.** A `ScoringBackend` returns raw log-probabilities per option. The included `OpenAiBackend`
-   asks an OpenAI-compatible server for exactly one token and reads the log-probabilities of the option
-   labels `A`, `B`, `C`, ...
+2. **Backend.** A `ScoringBackend` returns raw log-probabilities per option; it is the only model-specific
+   interface. The included `OpenAiBackend` asks an OpenAI-compatible server for exactly one token and reads
+   the log-probabilities of the option labels `A`, `B`, `C`, ... A trained classifier implements the same
+   interface by returning its log-softmax scores (see [Choosing a backend](#choosing-a-backend)).
 3. **Calibration.** Raw model probabilities are usually overconfident, often badly, and small models often
    favour particular options. `Calibration.fit` fits a temperature per field from a few hundred labelled
    examples, and additionally a bias per option where that does better on a holdout set. It reports accuracy
@@ -63,7 +70,7 @@ ollama pull qwen2.5:1.5b
 <dependency>
     <groupId>com.dukehoff.decide</groupId>
     <artifactId>dukehoff-decide-openai</artifactId>   <!-- brings dukehoff-decide-core -->
-    <version>0.1.0</version>
+    <version>0.2.0</version>
 </dependency>
 ```
 
@@ -115,11 +122,59 @@ calibrating again. Each profile also records a fingerprint of every field's prom
 `Q4_K_M` GGUF for llama.cpp are both 4-bit Qwen2.5 1.5B, but different files, and in an earlier version of the
 showcase they reached 82.0% and 87.7% category accuracy on the same messages. Give each setup its own `modelId`.
 
+### With a trained classifier
+
+Once there are a few thousand labelled cases, train a classifier on them instead. `dukehoff-decide-classifier`
+needs no model server and has no dependencies besides `dukehoff-decide-core`:
+
+```xml
+<dependency>
+    <groupId>com.dukehoff.decide</groupId>
+    <artifactId>dukehoff-decide-classifier</artifactId>
+    <version>0.2.0</version>
+</dependency>
+```
+
+```java
+LinearClassifier model = LinearClassifier.train(Triage.class, labeled);   // List<Calibration.Labeled<Triage>>
+model.save(Path.of("src/main/resources/decide/triage.model"));
+
+DecisionTask<Triage> raw = Decider.builder().backend(model).build().task(Triage.class);
+profiles.save(Calibration.fit(raw, train, holdout).profile());   // cases the model was not trained on
+```
+
+`LinearClassifier` is a `ScoringBackend` like `OpenAiBackend`: TF-IDF features of `State.render()` (word 1–2-grams
+and character 3–5-grams) and one logistic regression per field, trained in seconds to about a minute (20,000 texts) and scoring in well
+under a millisecond. Everything above, calibration, gating, `thresholdFor` and the report, works unchanged.
+Calibrate on cases the model has not seen; its scores on its own training data are too confident. At runtime, load
+it with `LinearClassifier.load(path)` or `load(inputStream)` (e.g. from the classpath). Its model id is derived
+from the weights, so a retrained model needs a new calibration profile. Unlike a language model it learns only
+from labels, not from `@Question` or `@Option` texts: adding or reordering an option means retraining, and the
+model refuses to score a task whose options no longer match. `LinearClassifier.trainer()` sets epochs, learning
+rate, regularisation, the number of hash buckets and the seed.
+
+## Choosing a backend
+
+Summary of the [results](#results) below, all calibrated and gated the same way:
+
+| | prompted language model | word counts + logistic regression (`LinearClassifier`) | sentence embeddings + logistic regression |
+|---|---|---|---|
+| labelled data | a few hundred, for calibration | a few thousand | a few thousand, fewer than word counts |
+| accuracy | behind both once there are enough labels | as good as embeddings on short texts, a few points behind on long ones | best on long texts written by people, and in German |
+| time per decision (M1 Pro) | 0.2–2 s | under 1 ms | 20–100 ms (one embedding) |
+| needs | a model server with logprobs | nothing | an embedding server |
+| changing the question | edit `@Question`/`@Option`, recalibrate | relabel and retrain | relabel and retrain |
+
+A language model is the way to start: it works from day one, and its confident decisions are already useful
+while labels accumulate (from humans handling the uncertain cases, for example). Word counts + logistic
+regression is [`LinearClassifier`](#with-a-trained-classifier) in `dukehoff-decide-classifier`. The embedding
+variant is part of the showcase only (`EmbeddingBackend`), as an example of another trained `ScoringBackend`.
+
 ## Results
 
 From `dukehoff-decide-showcase` (2026-10-25), Qwen2.5-Instruct (Q4_K_M) via a native llama.cpp server on an
 M1 Pro, 300 calibration and 300 disjoint test examples per run (seed 42). For comparison, a linear baseline without
-any language model (`-Dshowcase.backend=linear`): TF-IDF features and logistic regression per field, trained on
+any language model (`LinearClassifier`, `-Dshowcase.backend=linear`): TF-IDF features and logistic regression per field, trained on
 examples that occur in neither split. And the same classifier on sentence embeddings (`-Dshowcase.backend=embedding`,
 [bge-m3](https://huggingface.co/BAAI/bge-m3) or Qwen3-Embedding-0.6B via llama.cpp): a frozen pretrained encoder turns
 each text into one vector that also captures context, and only the logistic regression on top is trained.
@@ -208,8 +263,10 @@ nothing else in flight.
 
 ## Limitations
 
-- At most 26 options per field (labels `A`–`Z`).
-- One model request per field; a decision with three fields makes three requests (they run concurrently).
+- A `LinearClassifier` needs labelled data and has to be retrained when options change; it only sees the
+  words, so it cannot follow a reworded question.
+- With a language model: at most 26 options per field (labels `A`–`Z`), and one model request per field; a
+  decision with three fields makes three requests (they run concurrently).
 - Calibration is a temperature plus one bias per option. It corrects a model that over- or under-predicts an
   option across the board, not confusions that depend on the input.
 - `OpenAiBackend` has been verified against llama.cpp and Ollama (0.34). Other OpenAI-compatible servers
@@ -223,8 +280,9 @@ nothing else in flight.
 |---|---|
 | `dukehoff-decide-core` | API, schema binding, gating, calibration, diagnostics, profile stores. No runtime dependencies. |
 | `dukehoff-decide-openai` | Backend for OpenAI-compatible `/v1/chat/completions` with logprobs. Uses `java.net.http` and Jackson. |
+| `dukehoff-decide-classifier` | `LinearClassifier`: a backend trained on labelled examples (TF-IDF + logistic regression). No dependencies. |
 | `dukehoff-decide-spring-boot-starter` | Spring Boot 4 auto-configuration, `DecisionTask<T>` beans, health indicator, Micrometer metrics. |
-| `dukehoff-decide-showcase` | End-to-end evaluation on public datasets (not published). |
+| `dukehoff-decide-showcase` | End-to-end evaluation on public datasets: language models vs. trained classifiers (not published). |
 
 ## Spring Boot
 
@@ -232,7 +290,7 @@ nothing else in flight.
 <dependency>
     <groupId>com.dukehoff.decide</groupId>
     <artifactId>dukehoff-decide-spring-boot-starter</artifactId>
-    <version>0.1.0</version>
+    <version>0.2.0</version>
 </dependency>
 ```
 
@@ -265,7 +323,8 @@ class TicketService {
 The starter creates an `OpenAiBackend` when `dukehoff.decide.openai.model` is set, a `CalibrationStore` from
 `dukehoff.decide.calibration.location` (`classpath:...`, `file:...` or a path), a `Decider`, and one `DecisionTask<T>` bean
 per type in `@EnableDecisionTasks`. Your own `ScoringBackend`, `CalibrationStore` or `Decider` bean replaces the
-default. Tasks are created at startup, so an invalid output type or a missing required profile stops the
+default; for a trained classifier, declare
+`@Bean ScoringBackend backend() { return LinearClassifier.load(...); }`. Tasks are created at startup, so an invalid output type or a missing required profile stops the
 application immediately. Environment variables work as usual, e.g. `DUKEHOFF_DECIDE_OPENAI_MODEL`.
 
 With Actuator, the health component `dukehoffDecide` checks that the model server answers `GET /models`
@@ -301,8 +360,8 @@ The report goes to `target/showcase/<dataset>/report.md` (relative to where Mave
 during long runs (`caffeinate -i mvn ...` on macOS); requests in flight when it sleeps time out.
 Options: `-Dshowcase.dataset=tickets|bitext|massive|cfpb` (massive needs `-Dshowcase.language=en` or `de`), `-Dshowcase.calibration=300`, `-Dshowcase.test=300`,
 `-Dshowcase.language=all|en|de`, `-Dshowcase.seed=42`, `-Dshowcase.baseUrl=...`, `-Dshowcase.apiKey=...`.
-`-Dshowcase.backend=linear` (with `-Dshowcase.train=3000`) needs no model: it trains a TF-IDF + logistic
-regression baseline on examples outside both splits and writes the same report to `target/showcase/<dataset>-linear`;
+`-Dshowcase.backend=linear` (with `-Dshowcase.train=3000`) needs no model: it trains a `LinearClassifier`
+on examples outside both splits and writes the same report to `target/showcase/<dataset>-linear`;
 `-Dshowcase.similarity=0.6` also drops training examples that resemble a calibration or test example.
 `-Dshowcase.backend=embedding` trains the same classifier on embeddings from an OpenAI-compatible `/v1/embeddings`
 endpoint (`-Dshowcase.embeddingUrl=http://localhost:8081/v1`, `-Dshowcase.embeddingModel=bge-m3`), for example

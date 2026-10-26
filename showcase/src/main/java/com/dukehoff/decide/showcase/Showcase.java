@@ -22,6 +22,7 @@ import com.dukehoff.decide.State;
 import com.dukehoff.decide.calibration.Calibration.CalibrationReport;
 import com.dukehoff.decide.calibration.Calibration.FieldReport;
 import com.dukehoff.decide.calibration.Calibration;
+import com.dukehoff.decide.classifier.LinearClassifier;
 import com.dukehoff.decide.calibration.CalibrationStore;
 import com.dukehoff.decide.calibration.Calibrator;
 import com.dukehoff.decide.calibration.Confusion;
@@ -77,7 +78,7 @@ import java.util.stream.Stream;
  * {@code showcase.embeddingUrl} (default http://localhost:8081/v1), {@code showcase.embeddingModel} (default bge-m3).
  *
  * <p>{@code embedding} does the same on vectors from an embedding model ({@link EmbeddingBackend}).
- * {@code linear} needs no model: it trains {@link LinearBackend} (TF-IDF + logistic regression) on examples the
+ * {@code linear} needs no model: it trains a {@link LinearClassifier} (TF-IDF + logistic regression) on examples the
  * calibration and test splits don't contain, so its report is directly comparable with an LLM run on the same seed.
  */
 public final class Showcase {
@@ -188,7 +189,7 @@ public final class Showcase {
             }
             public ScoringBackend train(String modelId, TaskSchema schema, List<State> states,
                                         List<Map<String, Integer>> targets, long seed) {
-                return LinearBackend.train(modelId, schema, states, targets, seed);
+                return LinearClassifier.trainer().seed(seed).modelId(modelId).train(schema, states, targets);
             }
         };
     }

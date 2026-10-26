@@ -7,11 +7,11 @@
 
     <groupId>com.dukehoff.decide</groupId>
     <artifactId>dukehoff-decide-parent</artifactId>
-    <version>0.1.0-SNAPSHOT</version>
+    <version>0.2.0-SNAPSHOT</version>
     <packaging>pom</packaging>
 
     <name>dukehoff-decide</name>
-    <description>Type-safe, calibrated decisions from small language models</description>
+    <description>Type-safe, calibrated decisions from small language models or trained classifiers</description>
     <url>${github.url}</url>
     <inceptionYear>2026</inceptionYear>
 
@@ -50,6 +50,7 @@
     <modules>
         <module>core</module>
         <module>openai</module>
+        <module>classifier</module>
         <module>showcase</module>
         <module>spring-boot-starter</module>
     </modules>
@@ -86,6 +87,11 @@
             <dependency>
                 <groupId>com.dukehoff.decide</groupId>
                 <artifactId>dukehoff-decide-openai</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>com.dukehoff.decide</groupId>
+                <artifactId>dukehoff-decide-classifier</artifactId>
                 <version>${project.version}</version>
             </dependency>
             <dependency>
