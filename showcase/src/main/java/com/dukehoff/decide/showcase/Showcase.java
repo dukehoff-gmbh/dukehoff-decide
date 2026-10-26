@@ -23,6 +23,8 @@ import com.dukehoff.decide.calibration.Calibration.CalibrationReport;
 import com.dukehoff.decide.calibration.Calibration.FieldReport;
 import com.dukehoff.decide.calibration.Calibration;
 import com.dukehoff.decide.classifier.LinearClassifier;
+import com.dukehoff.decide.embedding.EmbeddingClassifier;
+import com.dukehoff.decide.embedding.OpenAiEmbedder;
 import com.dukehoff.decide.calibration.CalibrationStore;
 import com.dukehoff.decide.calibration.Calibrator;
 import com.dukehoff.decide.calibration.Confusion;
@@ -72,12 +74,12 @@ import java.util.stream.Stream;
  * {@code showcase.language} (all, en, de), {@code showcase.concurrency} (examples in flight, default 4),
  * {@code showcase.cache} (default ~/.cache/dukehoff-decide), {@code showcase.out} (default target/showcase/&lt;dataset&gt;),
  * {@code showcase.calibrator} (best, temperature; default best),
- * {@code showcase.backend} (llm, linear, embedding; default llm), {@code showcase.train} (linear only: training examples,
+ * {@code showcase.backend} (llm, linear, embedding, combine; default llm), {@code showcase.combine} (see {@link Combined}), {@code showcase.train} (linear only: training examples,
  * disjoint from both splits, default 3000), {@code showcase.similarity} (linear only: drop training examples whose
  * character-trigram Jaccard similarity to a calibration or test example reaches this; default 1, exact duplicates),
  * {@code showcase.embeddingUrl} (default http://localhost:8081/v1), {@code showcase.embeddingModel} (default bge-m3).
  *
- * <p>{@code embedding} does the same on vectors from an embedding model ({@link EmbeddingBackend}).
+ * <p>{@code embedding} does the same on vectors from an embedding model ({@link EmbeddingClassifier}).
  * {@code linear} needs no model: it trains a {@link LinearClassifier} (TF-IDF + logistic regression) on examples the
  * calibration and test splits don't contain, so its report is directly comparable with an LLM run on the same seed.
  */
@@ -93,10 +95,12 @@ public final class Showcase {
 
         static Config fromSystemProperties() {
             String backend = System.getProperty("showcase.backend", "llm");
-            if (!List.of("llm", "linear", "embedding").contains(backend)) {
-                throw new IllegalArgumentException("Unknown backend '" + backend + "', use llm, linear or embedding");
+            if (!List.of("llm", "linear", "embedding", "combine").contains(backend)) {
+                throw new IllegalArgumentException("Unknown backend '" + backend + "', use llm, linear, embedding or combine");
             }
-            String model = System.getProperty("showcase.model", backend.equals("llm") ? null : backend);
+            boolean needsModel = backend.equals("llm")
+                    || backend.equals("combine") && System.getProperty("showcase.combine", "").contains("llm");
+            String model = System.getProperty("showcase.model", needsModel ? null : backend);
             if (model == null || model.isBlank()) {
                 throw new IllegalArgumentException("Set -Dshowcase.model=<model name>, e.g. qwen2.5-1.5b-instruct-q4_k_m");
             }
@@ -139,6 +143,10 @@ public final class Showcase {
         List<Example<T>> sample = ShowcaseDataset.sample(all, cfg.calibration() + cfg.test(), cfg.seed(), cfg.language());
         List<Example<T>> calibration = sample.subList(0, cfg.calibration());
         List<Example<T>> test = sample.subList(cfg.calibration(), sample.size());
+        if (cfg.backend().equals("combine")) {
+            Combined.run(dataset, cfg, all, calibration, test);
+            return;
+        }
         if (!cfg.backend().equals("llm")) {
             runTrained(dataset, cfg, all, calibration, test,
                     cfg.backend().equals("linear") ? linearTrainer() : embeddingTrainer(cfg));
@@ -195,17 +203,19 @@ public final class Showcase {
     }
 
     static Trainer embeddingTrainer(Config cfg) {
-        EmbeddingBackend.Embedder embedder = new EmbeddingBackend.Embedder(cfg.embeddingUrl(), cfg.embeddingModel(),
-                cfg.apiKey(), cfg.cache().resolve("embeddings"), cfg.concurrency());
+        OpenAiEmbedder.Builder b = OpenAiEmbedder.builder().baseUrl(cfg.embeddingUrl()).model(cfg.embeddingModel())
+                .maxConcurrency(cfg.concurrency()).timeout(Duration.ofMinutes(2));
+        if (cfg.apiKey() != null) b.apiKey(cfg.apiKey());
+        CachingEmbedder embedder = new CachingEmbedder(b.build(), cfg.cache().resolve("embeddings"));
         return new Trainer() {
-            public String id() { return "embed-" + embedder.model().replaceAll("[^A-Za-z0-9._-]+", "_") + "-lr"; }
+            public String id() { return "embed-" + embedder.modelId().replaceAll("[^A-Za-z0-9._-]+", "_") + "-lr"; }
             public String description() {
-                return "embeddings from `" + embedder.model() + "` via `" + cfg.embeddingUrl()
+                return "embeddings from `" + embedder.modelId() + "` via `" + cfg.embeddingUrl()
                         + "` (frozen) + logistic regression per field";
             }
             public ScoringBackend train(String modelId, TaskSchema schema, List<State> states,
                                         List<Map<String, Integer>> targets, long seed) {
-                return EmbeddingBackend.train(modelId, embedder, schema, states, targets, seed);
+                return EmbeddingClassifier.trainer().seed(seed).modelId(modelId).train(embedder, schema, states, targets);
             }
             public String cost(List<State> examples) {
                 double[] ms = embedder.timeSingle(examples.stream().limit(100).map(State::render).toList());

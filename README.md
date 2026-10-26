@@ -153,11 +153,34 @@ from labels, not from `@Question` or `@Option` texts: adding or reordering an op
 model refuses to score a task whose options no longer match. `LinearClassifier.trainer()` sets epochs, learning
 rate, regularisation, the number of hash buckets and the seed.
 
+### With embeddings
+
+`EmbeddingClassifier` (in `dukehoff-decide-embedding`) trains the same kind of classifier on sentence embeddings
+instead of word counts. An embedding model, which stays frozen, turns each text into one vector in which texts with
+similar meaning lie close together, even without shared words. It needs an embedding server, e.g.
+`llama-server -hf ggml-org/bge-m3-Q8_0-GGUF --embeddings --port 8081 -ub 8192 -b 8192` (the batch sizes must hold
+the longest text in tokens), and pays off on longer texts written by people
+and in German (see [Results](#results)).
+
+```java
+Embedder embedder = OpenAiEmbedder.builder()            // any OpenAI-compatible /v1/embeddings endpoint
+        .baseUrl("http://localhost:8081/v1")
+        .model("bge-m3")
+        .build();
+EmbeddingClassifier model = EmbeddingClassifier.train(embedder, Triage.class, labeled);
+model.save(Path.of("src/main/resources/decide/triage.model"));
+// at runtime
+ScoringBackend backend = EmbeddingClassifier.load(Path.of(".../triage.model"), embedder);
+```
+
+The saved model holds the classifier only, not the embedding model; `load` checks that the embedder has the
+model id it was trained with. Implement `Embedder` to use another runtime or to cache vectors.
+
 ## Choosing a backend
 
 Summary of the [results](#results) below, all calibrated and gated the same way:
 
-| | prompted language model | word counts + logistic regression (`LinearClassifier`) | sentence embeddings + logistic regression |
+| | prompted language model | word counts + logistic regression (`LinearClassifier`) | sentence embeddings + logistic regression (`EmbeddingClassifier`) |
 |---|---|---|---|
 | labelled data | a few hundred, for calibration | a few thousand | a few thousand, fewer than word counts |
 | accuracy | behind both once there are enough labels | as good as embeddings on short texts, a few points behind on long ones | best on long texts written by people, and in German |
@@ -167,8 +190,8 @@ Summary of the [results](#results) below, all calibrated and gated the same way:
 
 A language model is the way to start: it works from day one, and its confident decisions are already useful
 while labels accumulate (from humans handling the uncertain cases, for example). Word counts + logistic
-regression is [`LinearClassifier`](#with-a-trained-classifier) in `dukehoff-decide-classifier`. The embedding
-variant is part of the showcase only (`EmbeddingBackend`), as an example of another trained `ScoringBackend`.
+regression is [`LinearClassifier`](#with-a-trained-classifier) in `dukehoff-decide-classifier`; sentence
+embeddings + logistic regression is [`EmbeddingClassifier`](#with-embeddings) in `dukehoff-decide-embedding`.
 
 ## Results
 
@@ -263,8 +286,8 @@ nothing else in flight.
 
 ## Limitations
 
-- A `LinearClassifier` needs labelled data and has to be retrained when options change; it only sees the
-  words, so it cannot follow a reworded question.
+- The trained classifiers need labelled data and have to be retrained when options change; they learn from
+  labels only, so a reworded question changes nothing.
 - With a language model: at most 26 options per field (labels `A`–`Z`), and one model request per field; a
   decision with three fields makes three requests (they run concurrently).
 - Calibration is a temperature plus one bias per option. It corrects a model that over- or under-predicts an
@@ -281,6 +304,7 @@ nothing else in flight.
 | `dukehoff-decide-core` | API, schema binding, gating, calibration, diagnostics, profile stores. No runtime dependencies. |
 | `dukehoff-decide-openai` | Backend for OpenAI-compatible `/v1/chat/completions` with logprobs. Uses `java.net.http` and Jackson. |
 | `dukehoff-decide-classifier` | `LinearClassifier`: a backend trained on labelled examples (TF-IDF + logistic regression). No dependencies. |
+| `dukehoff-decide-embedding` | `EmbeddingClassifier` (embeddings + logistic regression) and `OpenAiEmbedder` for `/v1/embeddings`. Uses `java.net.http` and Jackson. |
 | `dukehoff-decide-spring-boot-starter` | Spring Boot 4 auto-configuration, `DecisionTask<T>` beans, health indicator, Micrometer metrics. |
 | `dukehoff-decide-showcase` | End-to-end evaluation on public datasets: language models vs. trained classifiers (not published). |
 
@@ -363,7 +387,7 @@ Options: `-Dshowcase.dataset=tickets|bitext|massive|cfpb` (massive needs `-Dshow
 `-Dshowcase.backend=linear` (with `-Dshowcase.train=3000`) needs no model: it trains a `LinearClassifier`
 on examples outside both splits and writes the same report to `target/showcase/<dataset>-linear`;
 `-Dshowcase.similarity=0.6` also drops training examples that resemble a calibration or test example.
-`-Dshowcase.backend=embedding` trains the same classifier on embeddings from an OpenAI-compatible `/v1/embeddings`
+`-Dshowcase.backend=embedding` trains an `EmbeddingClassifier` on embeddings from an OpenAI-compatible `/v1/embeddings`
 endpoint (`-Dshowcase.embeddingUrl=http://localhost:8081/v1`, `-Dshowcase.embeddingModel=bge-m3`), for example
 `llama-server -hf ggml-org/bge-m3-Q8_0-GGUF --embeddings --port 8081 -ub 8192 -b 8192`; vectors are cached in
 `~/.cache/dukehoff-decide/embeddings`.

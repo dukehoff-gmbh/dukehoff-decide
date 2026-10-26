@@ -93,7 +93,7 @@ jobs:
             echo "::error::files outside the version folders (see above)"; exit 1
           fi
           artifacts=$(cut -d/ -f4 entries.txt | sort -u | tr '\n' ' ')
-          expected="dukehoff-decide-classifier dukehoff-decide-core dukehoff-decide-openai dukehoff-decide-parent dukehoff-decide-spring-boot-starter "
+          expected="dukehoff-decide-classifier dukehoff-decide-core dukehoff-decide-embedding dukehoff-decide-openai dukehoff-decide-parent dukehoff-decide-spring-boot-starter "
           [ "$artifacts" = "$expected" ] || { echo "::error::unexpected artifacts: $artifacts"; exit 1; }
           if [ "$HAS_KEY" = true ]; then
             missing=$(grep -E '\.(jar|pom)$' entries.txt | while read -r f; do grep -qx "$f.asc" entries.txt || echo "$f"; done)
@@ -130,7 +130,7 @@ jobs:
           \`\`\`xml
           <dependency>
               <groupId>com.dukehoff.decide</groupId>
-              <artifactId>dukehoff-decide-openai</artifactId>   <!-- or dukehoff-decide-classifier, dukehoff-decide-spring-boot-starter -->
+              <artifactId>dukehoff-decide-openai</artifactId>   <!-- or dukehoff-decide-classifier, -embedding, -spring-boot-starter -->
               <version>${VERSION}</version>
           </dependency>
           \`\`\`

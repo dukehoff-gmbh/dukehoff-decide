@@ -3,7 +3,7 @@
 Artifacts go to Maven Central through the [Sonatype Central Portal](https://central.sonatype.com), built and
 uploaded by the GitHub Actions workflow `.github/workflows/release.yml`, the same way as dukehoff-mcp.
 Published: `dukehoff-decide-parent`, `dukehoff-decide-core`, `dukehoff-decide-openai`,
-`dukehoff-decide-classifier`, `dukehoff-decide-spring-boot-starter`. Not published: `dukehoff-decide-showcase`.
+`dukehoff-decide-classifier`, `dukehoff-decide-embedding`, `dukehoff-decide-spring-boot-starter`. Not published: `dukehoff-decide-showcase`.
 
 ## Setup
 
@@ -27,7 +27,7 @@ Published: `dukehoff-decide-parent`, `dukehoff-decide-core`, `dukehoff-decide-op
 ## Dry run
 
 Actions > Release > Run workflow, with the version to try (e.g. `0.1.0`). It sets that version on the runner,
-builds and tests, builds the Central bundle (signed if the key secrets are set) and checks it: only the five
+builds and tests, builds the Central bundle (signed if the key secrets are set) and checks it: only the six
 published artifacts, every file inside its version folder, every jar and pom signed. Nothing is uploaded; the
 bundle is kept as a workflow artifact for 7 days.
 
