@@ -65,7 +65,7 @@ final class Combined {
     /** A backend from the list, calibrated on the calibration split, with its decisions on the test split. */
     record Component<T>(String name, ScoringBackend backend, CalibrationReport fit, List<Decision<T>> decisions) {}
 
-    static <T> void run(ShowcaseDataset<T> dataset, Config cfg, List<Example<T>> all, List<Example<T>> calibration,
+    static <T> Seeds.Results run(ShowcaseDataset<T> dataset, Config cfg, List<Example<T>> all, List<Example<T>> calibration,
                         List<Example<T>> test) throws Exception {
         List<String> names = Arrays.stream(System.getProperty("showcase.combine", "linear,embedding").split(","))
                 .map(String::strip).filter(s -> !s.isEmpty()).toList();
@@ -92,6 +92,8 @@ final class Combined {
                 new Ensemble(components.stream().map(Component::backend).toList()), dataset, cfg, calibration, test);
 
         List<T> expected = test.stream().map(Example::label).toList();
+        Seeds.Results results = new Seeds.Results();
+        Map<String, java.util.function.Function<T, Object>> whole = Map.of(Showcase.WHOLE, v -> v);
         StringBuilder md = new StringBuilder();
         md.append("# dukehoff-decide showcase: combining backends, ").append(dataset.title()).append("\n\n");
         md.append(String.format(Locale.ROOT, """
@@ -117,6 +119,7 @@ final class Combined {
             List<String> cells = new ArrayList<>(List.of("`" + c.name() + "`", pct(accuracy(c.decisions(), expected))));
             for (double t : THRESHOLDS) cells.addAll(gate(c.decisions(), expected, t));
             md.append(row(cells));
+            results.putAll(c.name(), Seeds.metrics(c.decisions(), expected, whole));
         }
 
         md.append("\n## Cascade\n\n");
@@ -137,6 +140,10 @@ final class Combined {
                     }
                 }
             }
+            Map<String, Double> m = new LinkedHashMap<>();
+            Seeds.gate(m, t, decided, correct, test.size());
+            for (int k = 0; k < by.length; k++) m.put("decided by " + components.get(k).name() + " " + f2(t), (double) by[k] / test.size());
+            results.putAll("cascade", m);
             List<String> parts = new ArrayList<>();
             for (int k = 0; k < by.length; k++) parts.add(components.get(k).name() + " " + pct((double) by[k] / test.size()));
             md.append(row(List.of(f2(t), pct((double) decided / test.size()),
@@ -159,12 +166,16 @@ final class Combined {
                 At least one component is right on %s (an upper bound for any way of choosing between them).
                 """, pct((double) agree / test.size()), agree == 0 ? "-" : pct((double) agreeCorrect / agree),
                 pct((double) anyCorrect / test.size())));
+        results.put("agreement", "all agree", (double) agree / test.size());
+        results.put("agreement", "right when all agree", agree == 0 ? Double.NaN : (double) agreeCorrect / agree);
+        results.put("agreement", "at least one right (oracle)", (double) anyCorrect / test.size());
 
         Files.createDirectories(cfg.out());
         Path file = cfg.out().resolve("report.md");
         Files.writeString(file, md);
         System.out.println(md);
         System.err.println("Report written to " + file.toAbsolutePath());
+        return results;
     }
 
     // ------------------------------------------------------------------------------------- components

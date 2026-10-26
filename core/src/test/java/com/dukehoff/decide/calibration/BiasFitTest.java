@@ -118,6 +118,17 @@ class BiasFitTest {
     }
 
     @Test
+    void theHoldoutDoesNotTakePartInTheChoice() {
+        BiasedSimulation sim = new BiasedSimulation(3000, 11);
+        DecisionTask<Article> task = Decider.builder().backend(sim.backend).build().task(Article.class);
+        var train = sim.examples.subList(0, 1000);
+        var a = Calibration.fit(task, train, sim.examples.subList(1000, 2000)).profile();
+        var b = Calibration.fit(task, train, sim.examples.subList(2000, 3000)).profile();
+        assertEquals(a.byField(), b.byField());
+        assertInstanceOf(Calibrator.Bias.class, a.byField().get("topic"));
+    }
+
+    @Test
     void temperatureWithoutHoldoutOrWhenAsked() {
         BiasedSimulation sim = new BiasedSimulation(2000, 3);
         DecisionTask<Article> task = Decider.builder().backend(sim.backend).build().task(Article.class);

@@ -49,7 +49,8 @@ switch (triage.requireConfidence(Map.of("priority", 0.7, "churnRisk", 0.9)).deci
    interface by returning its log-softmax scores (see [Choosing a backend](#choosing-a-backend)).
 3. **Calibration.** Raw model probabilities are usually overconfident, often badly, and small models often
    favour particular options. `Calibration.fit` fits a temperature per field from a few hundred labelled
-   examples, and additionally a bias per option where that does better on a holdout set. It reports accuracy
+   examples, and additionally a bias per option where that does better in a cross-validation on those
+   examples. It reports accuracy
    and expected calibration error (ECE) before and after, shows which options get confused, and produces a
    profile per (task, model).
 4. **Binding.** Calibrated probabilities become a typed value, per-field distributions, and an optional gate
@@ -98,8 +99,9 @@ The report shows, per field and for the whole record, how many cases a gate at e
 automatically and how accurate those are. `thresholdFor` picks the lowest threshold that reached a target
 accuracy on the holdout set; treat it as an estimate and re-check it as new labelled cases come in.
 
-The report says per field whether temperature scaling or temperature plus per-option bias was chosen, and
-why (holdout NLL of both). A bias can change which option wins, which is the point: it corrects a model that
+The report says per field whether temperature scaling or temperature plus per-option bias was chosen (by a
+5-fold cross-validation on the training examples, so the holdout set stays untouched) and the holdout NLL of
+both. A bias can change which option wins, which is the point: it corrects a model that
 systematically over-predicts an option. Read the report. A warning like `category: option CONTACT receives 16 of 30 errors (53%); its description
 probably matches too much` means an `@Option` description needs sharpening. In the showcase, rewording one
 description raised accuracy from 76% to 88–90%, more than a 4.7× larger model did.

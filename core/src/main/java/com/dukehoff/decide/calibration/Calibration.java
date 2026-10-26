@@ -51,13 +51,18 @@ public final class Calibration {
 
     public record Labeled<T>(State state, T expected) {}
 
+    /** Folds of the cross-validation that decides between temperature and bias ({@link Method#BEST}). */
+    public static final int FOLDS = 5;
+
     /** Which calibrators {@link #fit} may choose from. */
     public enum Method {
         /** Temperature only. Never changes which option wins. */
         TEMPERATURE,
         /**
-         * Temperature, or temperature plus a bias per option if that has a lower NLL on the holdout set.
-         * Without a holdout set, temperature.
+         * Temperature, or temperature plus a bias per option if that has a lower NLL in a
+         * {@value #FOLDS}-fold cross-validation on the training set. The holdout set plays no part in the choice,
+         * so its numbers stay unbiased. Without a holdout set, temperature: an in-sample fit never changes which
+         * option wins.
          */
         BEST
     }
@@ -173,7 +178,8 @@ public final class Calibration {
             }
             for (FieldReport f : fields) {
                 if (!(f.calibrator() instanceof Calibrator.Bias b)) continue;
-                sb.append(String.format(Locale.ROOT, "%s: bias chosen, NLL %.3f vs %.3f with temperature only; biases:",
+                sb.append(String.format(Locale.ROOT, "%s: bias chosen by cross-validation, NLL %.3f vs %.3f with "
+                        + "temperature only; biases:",
                         f.field(), f.nllAfter(), f.nllTemperatureOnly()));
                 b.biasByLabel().entrySet().stream()
                         .sorted((x, y) -> Double.compare(Math.abs(y.getValue()), Math.abs(x.getValue())))
@@ -219,15 +225,15 @@ public final class Calibration {
         return fit(task, examples, List.of());
     }
 
-    /** {@link Method#BEST}: temperature, or temperature plus bias where that is better on the holdout set. */
+    /** {@link Method#BEST}: temperature, or temperature plus bias where that is better in cross-validation. */
     public static <T> CalibrationReport fit(DecisionTask<T> task, List<Labeled<T>> train, List<Labeled<T>> holdout) {
         return fit(task, train, holdout, Method.BEST);
     }
 
     /**
      * Fits calibrators on {@code train} and reports metrics on {@code holdout} (or on train if empty). With
-     * {@link Method#BEST}, the holdout set also decides between the calibrators, so its numbers are slightly
-     * optimistic for the chosen one.
+     * {@link Method#BEST}, a cross-validation on {@code train} decides between the calibrators, so the holdout
+     * metrics are not tuned to the holdout set.
      */
     public static <T> CalibrationReport fit(DecisionTask<T> task, List<Labeled<T>> train, List<Labeled<T>> holdout,
                                             Method method) {
@@ -252,9 +258,7 @@ public final class Calibration {
             Calibrator cal = temperature;
             if (method == Method.BEST && !holdout.isEmpty()) {
                 Optional<Calibrator.Bias> bias = BiasFit.fit(trainRaw, trainTargets, labels);
-                if (bias.isPresent() && Metrics.nll(raw.stream().map(bias.get()::apply).toList(), targets) < nllTemperature) {
-                    cal = bias.get();
-                }
+                if (bias.isPresent() && biasWinsCrossValidation(trainRaw, trainTargets, labels)) cal = bias.get();
             }
             calibrators.put(f.name(), cal);
             double t = switch (cal) {
@@ -279,6 +283,32 @@ public final class Calibration {
         for (FieldSpec f : schema.fields()) promptHashes.put(f.name(), LabelPrompt.fingerprint(schema, f));
         Profile profile = new Profile(schema.taskId(), task.modelId(), calibrators, promptHashes);
         return new CalibrationReport(profile, reports, !holdout.isEmpty(), wholeBefore.coverage(), wholeAfter.coverage());
+    }
+
+    /**
+     * Out-of-fold NLL of temperature vs. temperature + bias, summed over {@link #FOLDS} interleaved folds
+     * (example i is in fold i mod {@code FOLDS}). A fold where the bias fit fails counts as temperature.
+     */
+    static boolean biasWinsCrossValidation(List<double[]> raw, int[] targets, List<String> labels) {
+        int folds = Math.min(FOLDS, targets.length);
+        if (folds < 2) return false;
+        double nllTemperature = 0, nllBias = 0;
+        for (int k = 0; k < folds; k++) {
+            List<double[]> fitRaw = new ArrayList<>(), evalRaw = new ArrayList<>();
+            List<Integer> fitTargets = new ArrayList<>(), evalTargets = new ArrayList<>();
+            for (int i = 0; i < targets.length; i++) {
+                (i % folds == k ? evalRaw : fitRaw).add(raw.get(i));
+                (i % folds == k ? evalTargets : fitTargets).add(targets[i]);
+            }
+            int[] fitT = fitTargets.stream().mapToInt(Integer::intValue).toArray();
+            int[] evalT = evalTargets.stream().mapToInt(Integer::intValue).toArray();
+            Calibrator temperature = Calibrator.temperature(TemperatureFit.fit(fitRaw, fitT));
+            double t = Metrics.nll(evalRaw.stream().map(temperature::apply).toList(), evalT) * evalT.length;
+            Optional<Calibrator.Bias> bias = BiasFit.fit(fitRaw, fitT, labels);
+            nllTemperature += t;
+            nllBias += bias.isPresent() ? Metrics.nll(evalRaw.stream().map(bias.get()::apply).toList(), evalT) * evalT.length : t;
+        }
+        return nllBias < nllTemperature;
     }
 
     /**

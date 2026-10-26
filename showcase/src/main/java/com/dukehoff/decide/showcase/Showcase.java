@@ -73,7 +73,8 @@ import java.util.stream.Stream;
  * {@code showcase.calibration} (examples, default 300), {@code showcase.test} (default 300), {@code showcase.seed} (42),
  * {@code showcase.language} (all, en, de), {@code showcase.concurrency} (examples in flight, default 4),
  * {@code showcase.cache} (default ~/.cache/dukehoff-decide), {@code showcase.out} (default target/showcase/&lt;dataset&gt;),
- * {@code showcase.calibrator} (best, temperature; default best),
+ * {@code showcase.calibrator} (best, temperature; default best), {@code showcase.seeds} (comma-separated; repeats
+ * the run per seed, each with its own reports under {@code seed-<n>}, and writes {@code seeds.md}, see {@link Seeds}),
  * {@code showcase.backend} (llm, linear, embedding, combine; default llm), {@code showcase.combine} (see {@link Combined}), {@code showcase.train} (linear only: training examples,
  * disjoint from both splits, default 3000), {@code showcase.similarity} (linear only: drop training examples whose
  * character-trigram Jaccard similarity to a calibration or test example reaches this; default 1, exact duplicates),
@@ -129,28 +130,54 @@ public final class Showcase {
                     System.getProperty("showcase.embeddingUrl", "http://localhost:8081/v1"),
                     System.getProperty("showcase.embeddingModel", "bge-m3"));
         }
+
+        Config withSeed(long seed) {
+            return new Config(dataset, baseUrl, model, apiKey, calibration, test, seed, language, concurrency, cache,
+                    out.resolve("seed-" + seed), method, backend, train, similarity, embeddingUrl, embeddingModel);
+        }
     }
 
     record Latency(int examples, double p50, double p95, double mean, int scoredNow, double perSecond) {}
 
     public static void main(String[] args) throws Exception {
         Config cfg = Config.fromSystemProperties();
-        run(ShowcaseDataset.byId(cfg.dataset()), cfg);
+        ShowcaseDataset<?> dataset = ShowcaseDataset.byId(cfg.dataset());
+        String seeds = System.getProperty("showcase.seeds");
+        if (seeds == null) {
+            run(dataset, cfg);
+            return;
+        }
+        List<Long> list = Arrays.stream(seeds.split(",")).map(String::strip).map(Long::parseLong).toList();
+        List<Seeds.Results> runs = new ArrayList<>();
+        for (long seed : list) {
+            System.err.println("=== seed " + seed);
+            runs.add(run(dataset, cfg.withSeed(seed)));
+        }
+        String setup = String.format(Locale.ROOT, "- Backend: %s%s%n- Data: %s, language: %s%n- Split: %d calibration, "
+                        + "%d test%s; calibrators: %s", cfg.backend(),
+                cfg.backend().equals("combine") ? " (" + System.getProperty("showcase.combine", "linear,embedding") + ")"
+                        : cfg.backend().equals("llm") ? " `" + cfg.model() + "`" : "",
+                dataset.citation(), cfg.language(), cfg.calibration(), cfg.test(),
+                cfg.backend().equals("llm") ? "" : ", up to " + cfg.train() + " training examples", cfg.method());
+        String md = Seeds.report("dukehoff-decide showcase: " + dataset.title(), setup, list, runs);
+        Files.createDirectories(cfg.out());
+        Path file = cfg.out().resolve("seeds.md");
+        Files.writeString(file, md);
+        System.out.println(md);
+        System.err.println("Summary written to " + file.toAbsolutePath());
     }
 
-    static <T> void run(ShowcaseDataset<T> dataset, Config cfg) throws Exception {
+    static <T> Seeds.Results run(ShowcaseDataset<T> dataset, Config cfg) throws Exception {
         List<Example<T>> all = dataset.load(cfg.cache().resolve("datasets"));
         List<Example<T>> sample = ShowcaseDataset.sample(all, cfg.calibration() + cfg.test(), cfg.seed(), cfg.language());
         List<Example<T>> calibration = sample.subList(0, cfg.calibration());
         List<Example<T>> test = sample.subList(cfg.calibration(), sample.size());
         if (cfg.backend().equals("combine")) {
-            Combined.run(dataset, cfg, all, calibration, test);
-            return;
+            return Combined.run(dataset, cfg, all, calibration, test);
         }
         if (!cfg.backend().equals("llm")) {
-            runTrained(dataset, cfg, all, calibration, test,
+            return runTrained(dataset, cfg, all, calibration, test,
                     cfg.backend().equals("linear") ? linearTrainer() : embeddingTrainer(cfg));
-            return;
         }
 
         OpenAiBackend.Builder b = OpenAiBackend.builder().baseUrl(cfg.baseUrl()).model(cfg.model())
@@ -170,6 +197,16 @@ public final class Showcase {
         String model = "`" + cfg.model() + "` via `" + cfg.baseUrl() + "`";
         String report = report(dataset, cfg, model, calibration, test, calibrated, fit, llmLatency(dataset, cfg, latency));
         write(cfg, report);
+        return results(cfg.model(), dataset, calibrated, test);
+    }
+
+    /** The headline numbers of one run, for {@link Seeds}. */
+    static <T> Seeds.Results results(String row, ShowcaseDataset<T> dataset, DecisionTask<T> calibrated,
+                                     List<Example<T>> test) {
+        Seeds.Results r = new Seeds.Results();
+        r.putAll(row, Seeds.metrics(calibrated.decideAll(test.stream().map(Example::state).toList()),
+                test.stream().map(Example::label).toList(), targets(dataset)));
+        return r;
     }
 
     /** Trains a backend without a prompt: features from the text, one logistic regression per field. */
@@ -230,7 +267,7 @@ public final class Showcase {
     }
 
     /** Same splits and report as an LLM run, scored by a backend trained on examples outside both splits. */
-    static <T> void runTrained(ShowcaseDataset<T> dataset, Config cfg, List<Example<T>> all,
+    static <T> Seeds.Results runTrained(ShowcaseDataset<T> dataset, Config cfg, List<Example<T>> all,
                                List<Example<T>> calibration, List<Example<T>> test, Trainer trainer)
             throws Exception {
         ShowcaseDataset.Rest<T> rest = ShowcaseDataset.rest(all, calibration.size() + test.size(), cfg.train(),
@@ -304,6 +341,7 @@ public final class Showcase {
         String model = String.format(Locale.ROOT, "`%s`: %s, trained on %d disjoint examples (%d dropped as %s "
                 + "the splits)", backend.modelId(), trainer.description(), training.size(), rest.dropped(), filter);
         write(cfg, report(dataset, cfg, model, calibration, test, calibrated, fit, curve + latency));
+        return results(cfg.backend(), dataset, calibrated, test);
     }
 
     static <T> ScoringBackend train(ShowcaseDataset<T> dataset, TaskSchema schema, List<Example<T>> training,
@@ -407,7 +445,8 @@ public final class Showcase {
 
                 """, model, dataset.citation(), cfg.language(), dataset.type().getSimpleName(),
                 calibration.size(), test.size(), cfg.seed(),
-                cfg.method() == Calibration.Method.BEST ? "temperature, or temperature + bias if better on the test split"
+                cfg.method() == Calibration.Method.BEST ? "temperature, or temperature + bias if better in a "
+                        + Calibration.FOLDS + "-fold cross-validation on the calibration split"
                         : "temperature only",
                 LocalDate.now()));
 
@@ -474,7 +513,7 @@ public final class Showcase {
                 md.append(row(String.format(Locale.ROOT, "%.2f", t), pct(raw.coverage()), pct(raw.accuracy()),
                         pct(cal.coverage()), pct(cal.accuracy())));
             }
-            md.append('\n');
+            md.append("\nThreshold for a target accuracy, chosen on the test split itself (optimistic):\n\n");
             for (double goal : new double[] {0.9, 0.95}) {
                 OptionalDouble t = fit.thresholdFor(name, goal);
                 md.append(String.format(Locale.ROOT, "- %.0f%% accuracy: %s%n", 100 * goal, t.isEmpty()
