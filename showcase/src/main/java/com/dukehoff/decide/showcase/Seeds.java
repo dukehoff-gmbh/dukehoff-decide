@@ -109,7 +109,7 @@ final class Seeds {
 
     static String range(List<Double> v) {
         if (v.isEmpty()) return "-";
-        return String.format(Locale.ROOT, "%.1f–%.1f", 100 * v.stream().mapToDouble(Double::doubleValue).min().orElseThrow(),
+        return String.format(Locale.ROOT, "%.1f to %.1f", 100 * v.stream().mapToDouble(Double::doubleValue).min().orElseThrow(),
                 100 * v.stream().mapToDouble(Double::doubleValue).max().orElseThrow());
     }
 }

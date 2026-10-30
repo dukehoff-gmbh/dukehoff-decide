@@ -15,9 +15,11 @@
  */
 package com.dukehoff.decide.showcase;
 
+import com.dukehoff.decide.Cascade;
 import com.dukehoff.decide.Decider;
 import com.dukehoff.decide.Decision;
 import com.dukehoff.decide.DecisionTask;
+import com.dukehoff.decide.Outcome;
 import com.dukehoff.decide.State;
 import com.dukehoff.decide.calibration.Calibration;
 import com.dukehoff.decide.calibration.Calibration.CalibrationReport;
@@ -28,7 +30,7 @@ import com.dukehoff.decide.embedding.OpenAiEmbedder;
 import com.dukehoff.decide.openai.OpenAiBackend;
 import com.dukehoff.decide.showcase.Showcase.Config;
 import com.dukehoff.decide.showcase.ShowcaseDataset.Example;
-import com.dukehoff.decide.spi.FieldSpec;
+import com.dukehoff.decide.spi.Ensemble;
 import com.dukehoff.decide.spi.ScoringBackend;
 import com.dukehoff.decide.spi.TaskSchema;
 
@@ -63,7 +65,8 @@ final class Combined {
     private Combined() {}
 
     /** A backend from the list, calibrated on the calibration split, with its decisions on the test split. */
-    record Component<T>(String name, ScoringBackend backend, CalibrationReport fit, List<Decision<T>> decisions) {}
+    record Component<T>(String name, ScoringBackend backend, CalibrationReport fit, DecisionTask<T> task,
+                        List<Decision<T>> decisions) {}
 
     static <T> Seeds.Results run(ShowcaseDataset<T> dataset, Config cfg, List<Example<T>> all, List<Example<T>> calibration,
                         List<Example<T>> test) throws Exception {
@@ -89,7 +92,7 @@ final class Combined {
             System.err.println("  " + name + " calibrated");
         }
         Component<T> ensemble = calibrate("ensemble (mean log-probability)",
-                new Ensemble(components.stream().map(Component::backend).toList()), dataset, cfg, calibration, test);
+                Ensemble.of(components.stream().map(Component::backend).toList()), dataset, cfg, calibration, test);
 
         List<T> expected = test.stream().map(Example::label).toList();
         Seeds.Results results = new Seeds.Results();
@@ -127,17 +130,15 @@ final class Combined {
         md.append(row(List.of("threshold", "coverage", "accuracy", "decided by")));
         md.append("|---:|---:|---:|---|\n");
         for (double t : THRESHOLDS) {
+            Cascade<T> cascade = Cascade.of(components.stream().map(c -> c.task().requireConfidence(t)).toList());
             int decided = 0, correct = 0;
             int[] by = new int[components.size()];
             for (int i = 0; i < test.size(); i++) {
-                for (int k = 0; k < components.size(); k++) {
-                    Decision<T> d = components.get(k).decisions().get(i);
-                    if (d.confidence() >= t) {
-                        decided++;
-                        by[k]++;
-                        if (d.value().equals(expected.get(i))) correct++;
-                        break;
-                    }
+                Cascade.Step<T> step = cascade.step(test.get(i).state());
+                if (step.outcome() instanceof Outcome.Confident<T>(Decision<T> d)) {
+                    decided++;
+                    by[step.stage()]++;
+                    if (d.value().equals(expected.get(i))) correct++;
                 }
             }
             Map<String, Double> m = new LinkedHashMap<>();
@@ -169,6 +170,17 @@ final class Combined {
         results.put("agreement", "all agree", (double) agree / test.size());
         results.put("agreement", "right when all agree", agree == 0 ? Double.NaN : (double) agreeCorrect / agree);
         results.put("agreement", "at least one right (oracle)", (double) anyCorrect / test.size());
+        // paired: both measured on the same test cases of this seed, so the spread of the gain is much smaller
+        Map<String, Double> first = results.rows.get(components.getFirst().name());
+        for (String row : List.of(ensemble.name(), "cascade")) {
+            for (double t : THRESHOLDS) {
+                String at = String.format(Locale.ROOT, "@%.2f", t);
+                for (String metric : List.of("coverage ", "accuracy ")) {
+                    results.put("gain over " + components.getFirst().name(), metric + at + ", " + row,
+                            results.rows.get(row).get(metric + at) - first.get(metric + at));
+                }
+            }
+        }
 
         Files.createDirectories(cfg.out());
         Path file = cfg.out().resolve("report.md");
@@ -227,52 +239,8 @@ final class Combined {
         store.save(fit.profile());
         DecisionTask<T> calibrated = Decider.builder().backend(backend).calibration(store).requireCalibration(true)
                 .build().task(dataset.type());
-        return new Component<>(name, backend, fit, calibrated.decideAll(test.stream().map(Example::state).toList()));
-    }
-
-    /** Averages the components' log-softmax scores per option (a geometric mean of their probabilities). */
-    static final class Ensemble implements ScoringBackend {
-        private final List<ScoringBackend> parts;
-
-        Ensemble(List<ScoringBackend> parts) {
-            this.parts = List.copyOf(parts);
-        }
-
-        @Override
-        public String modelId() {
-            return "ensemble(" + parts.stream().map(ScoringBackend::modelId).collect(Collectors.joining(",")) + ")";
-        }
-
-        @Override
-        public Map<String, RawScores> score(ScoringRequest request) {
-            return scoreAll(List.of(request)).getFirst();
-        }
-
-        @Override
-        public List<Map<String, RawScores>> scoreAll(List<ScoringRequest> requests) {
-            List<List<Map<String, RawScores>>> byPart = parts.stream().map(p -> p.scoreAll(requests)).toList();
-            List<Map<String, RawScores>> out = new ArrayList<>();
-            for (int i = 0; i < requests.size(); i++) {
-                Map<String, RawScores> fields = new LinkedHashMap<>();
-                for (FieldSpec f : requests.get(i).schema().fields()) {
-                    double[] mean = new double[f.options().size()];
-                    for (List<Map<String, RawScores>> part : byPart) {
-                        double[] lp = logSoftmax(part.get(i).get(f.name()).logProbs());
-                        for (int k = 0; k < mean.length; k++) mean[k] += lp[k] / parts.size();
-                    }
-                    fields.put(f.name(), new RawScores(mean));
-                }
-                out.add(fields);
-            }
-            return out;
-        }
-
-        private static double[] logSoftmax(double[] z) {
-            double max = Arrays.stream(z).max().orElse(0), sum = 0;
-            for (double v : z) sum += Math.exp(v - max);
-            double log = max + Math.log(sum);
-            return Arrays.stream(z).map(v -> v - log).toArray();
-        }
+        return new Component<>(name, backend, fit, calibrated,
+                calibrated.decideAll(test.stream().map(Example::state).toList()));
     }
 
     // ------------------------------------------------------------------------------------- report

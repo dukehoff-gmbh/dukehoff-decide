@@ -178,6 +178,29 @@ ScoringBackend backend = EmbeddingClassifier.load(Path.of(".../triage.model"), e
 The saved model holds the classifier only, not the embedding model; `load` checks that the embedder has the
 model id it was trained with. Implement `Embedder` to use another runtime or to cache vectors.
 
+### Combining backends
+
+Word counts and embeddings are often unsure about different cases, so two backends together decide more cases
+automatically than either alone (see [Results](#combining-word-counts-and-embeddings)). Both ways are in
+`dukehoff-decide-core`:
+
+```java
+// Cascade: the cheap backend decides what it is sure about, the next one only sees the rest.
+Cascade<Triage> triage = Cascade.of(
+        linearTask.requireConfidence(0.9),       // each task calibrated on its own
+        embeddingTask.requireConfidence(0.9));
+Outcome<Triage> outcome = triage.decide(state);  // Confident from the first sure stage, else the last Uncertain
+int stage = triage.step(state).stage();          // which stage decided, e.g. for metrics
+
+// Ensemble: one backend that averages the log-probabilities of its parts, calibrated as a whole.
+ScoringBackend both = Ensemble.of(linear, embedding);
+```
+
+The cascade is cheaper: the second backend only runs for the cases the first one is unsure about. A language
+model fits as the last stage, for the few cases both classifiers leave. The ensemble always asks every part and
+needs one calibration and one threshold; it is slightly more accurate at a given threshold, the cascade decides
+more. Either way, measure the combination on labelled data before choosing its thresholds.
+
 ## Choosing a backend
 
 Summary of the [results](#results) below, all calibrated and gated the same way:
@@ -194,6 +217,7 @@ A language model is the way to start: it works from day one, and its confident d
 while labels accumulate (from humans handling the uncertain cases, for example). Word counts + logistic
 regression is [`LinearClassifier`](#with-a-trained-classifier) in `dukehoff-decide-classifier`; sentence
 embeddings + logistic regression is [`EmbeddingClassifier`](#with-embeddings) in `dukehoff-decide-embedding`.
+Once both are trained, [combining them](#combining-backends) decides more cases than either alone.
 
 ## Results
 
@@ -285,6 +309,29 @@ examples, word counts get 56% and embeddings 67–70%, below the 7B model; at 3,
 method confuses money transfers with checking accounts most often, and many complaints are about both. Times for
 the language models are wall time over the run with four complaints in flight; for embeddings, one request with
 nothing else in flight.
+
+### Combining word counts and embeddings
+
+`-Dshowcase.backend=combine` (`LinearClassifier` and bge-m3 + `EmbeddingClassifier`, each calibrated on its own),
+over five seeds (42–46): each seed draws its own calibration, test and training examples. Whole record decided at
+threshold 0.9, mean over the seeds, with the accuracy of those in brackets:
+
+| | linear | bge-m3 | ensemble | cascade linear → bge-m3 |
+|---|---:|---:|---:|---:|
+| CFPB complaints | 44.2% (96.9%) | 40.5% (97.3%) | 49.7% (97.3%) | **54.3%** (96.3%) |
+| MASSIVE, English | 77.1% (97.2%) | 74.2% (97.9%) | 80.9% (98.1%) | **85.9%** (96.7%) |
+| MASSIVE, German | 73.5% (97.4%) | 70.3% (97.1%) | 77.6% (97.4%) | **82.1%** (96.1%) |
+| accuracy of all decisions, CFPB / en / de | 77.2 / 90.4 / 87.5% | 79.3 / 90.7 / 89.1% | 81.6 / 92.4 / 90.1% | |
+
+Measured on the same test cases, the cascade decides 8.6 to 10.1 points more than the linear model alone (5.3 to 15.3
+in single seeds, never less), at 0.5 to 1.3 points lower accuracy; the ensemble decides 3.8 to 5.5 points more at
+the same accuracy. At 0.95 the cascade still gains 7.7 to 8.1 points. The embedding is only computed for the cases
+the linear model is unsure about: 56% of the complaints, 23% (English) and 27% (German) of the MASSIVE requests.
+Both components are right or wrong together on most cases: they agree on 78% (CFPB) to 89% (MASSIVE en), and at
+least one of them is right on 87% to 95%, an upper bound for any way of choosing between them. With 300 test
+cases per seed, single numbers move by ±3 to ±7 points from seed to seed; the gains above are paired and much
+steadier. On the support tickets no combination decides anything automatically. Adding the 7B model to the
+ensemble makes it worse; as a third cascade stage it adds a few points at lower accuracy (seed 42 only).
 
 ## Limitations
 
@@ -393,6 +440,9 @@ on examples outside both splits and writes the same report to `target/showcase/<
 endpoint (`-Dshowcase.embeddingUrl=http://localhost:8081/v1`, `-Dshowcase.embeddingModel=bge-m3`), for example
 `llama-server -hf ggml-org/bge-m3-Q8_0-GGUF --embeddings --port 8081 -ub 8192 -b 8192`; vectors are cached in
 `~/.cache/dukehoff-decide/embeddings`.
+`-Dshowcase.backend=combine -Dshowcase.combine=linear,embedding[,llm]` compares single backends, their ensemble and
+the cascade in that order. `-Dshowcase.seeds=42,43,44,45,46` repeats any run per seed and writes `seeds.md` with
+mean, standard deviation and range.
 Datasets are downloaded on first run and keep their own licenses (tickets: CC BY-NC 4.0, Bitext: CDLA-Sharing-1.0,
 MASSIVE: CC BY 4.0, CFPB: public domain).
 
