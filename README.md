@@ -280,22 +280,37 @@ they end up level with word counts in English and 1.6 points ahead in German. Qw
 Computing one embedding takes 16–24 ms on the M1 Pro.
 
 **Support tickets** ([Tobi-Bueck/customer-support-tickets](https://huggingface.co/datasets/Tobi-Bueck/customer-support-tickets),
-synthetic, type/queue/priority), where many labels cannot be inferred from the text. Accuracy after calibration:
+synthetic). The task is to sort each ticket by type, queue and priority. The data supports only part of that:
 
 | | 1.5B | 7B | linear, ~19,400 training examples | bge-m3 + linear | most frequent label |
 |---|---:|---:|---:|---:|---:|
 | type | 67.5% | 64.2% | 84.8% | 82.3% | 39.3% |
 | queue | 32.2% | 28.3% | 52.9% | 41.4% | 27.4% |
 | priority | 42.4% | 43.3% | 59.0% | 46.8% | 38.9% |
+| whole ticket | 10.3% | 9.3% | 31.7% | 17.7% | 8.7% |
 
-The language models barely beat always guessing the most frequent label on `queue` and `priority`, yet often
-claim over 99% confidence: raw scores would auto-route 42–49% (1.5B) and 61–70% (7B) of tickets at threshold 0.9,
-with 5–12% of them fully correct. After calibration, none are auto-routed, which is the right answer. The
-calibration report flags `queue` and `priority` ("temperature at the limit") and the options that collect most
-errors. The linear model learns how this dataset assigns queues and priorities, which no prompt describes, but
-it is not good enough to auto-route whole tickets either (32% of whole tickets correct, none decided at 0.9).
-Embeddings do worse than word counts here (Qwen3-Embedding: 79.7% / 42.8% / 47.8%): whatever decides queue and
-priority in this synthetic data is in the words, not the meaning.
+The type is in the text. Queue and priority mostly are not: the language models barely beat always guessing the
+most frequent label, and the linear model, which learns how this dataset assigns them, still gets only a third of
+whole tickets right. In real systems these fields often depend on the customer, the contract or the workload,
+not on what the ticket says. At threshold 0.9 the linear model decides the type of 55% of tickets (49–59% across
+seeds) at 95% accuracy, but almost no queues (3–7%) or priorities (0–2%), so no whole ticket.
+
+The useful result is knowing which part of the task can be automated, before building on it:
+
+1. Collect a few hundred labelled tickets and measure each field on its own (accuracy, and the coverage–accuracy
+   curve from the calibration report).
+2. Keep the fields that reach the accuracy you need at a useful coverage; for `queue` and `priority`,
+   `report.thresholdFor(field, 0.95)` finds no threshold, or one that decides almost nothing.
+3. Drop the others from the output type and leave them to people. This matters because a decision is only as
+   confident as its least confident field: with queue and priority in the record, the type is never decided
+   automatically either.
+4. Revisit the dropped fields when there is more information to go on (customer data, history) or better labels.
+
+Two more observations. A language model's raw confidence says nothing about its accuracy: without calibration,
+the 7B model is more than 90% sure on 61–70% of tickets (1.5B: 42–49%), and only 5–12% of those are fully
+correct. That only shows on labelled cases, which is why step 1 cannot be skipped. And embeddings do worse than
+word counts here (Qwen3-Embedding: 79.7% / 42.8% / 47.8%): whatever decides queue and priority in this synthetic
+data is in the words, not the meaning.
 
 **Consumer complaints** ([CFPB consumer complaint narratives](https://www.consumerfinance.gov/data-research/consumer-complaints/),
 public domain, written by real consumers to the US Consumer Financial Protection Bureau, from the archived export
@@ -336,7 +351,7 @@ the linear model is unsure about: 56% of the complaints, 23% (English) and 27% (
 Both components are right or wrong together on most cases: they agree on 78% (CFPB) to 89% (MASSIVE en), and at
 least one of them is right on 87% to 95%, an upper bound for any way of choosing between them. With 300 test
 cases per seed, single numbers move by ±3 to ±7 points from seed to seed; the gains above are paired and much
-steadier. On the support tickets no combination decides anything automatically. Adding the 7B model to the
+steadier. On the support tickets no combination decides a whole ticket automatically. Adding the 7B model to the
 ensemble makes it worse; as a third cascade stage it adds a few points at lower accuracy (seed 42 only).
 
 ## Limitations
