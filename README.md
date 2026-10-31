@@ -221,12 +221,16 @@ Once both are trained, [combining them](#combining-backends) decides more cases 
 
 ## Results
 
-From `dukehoff-decide-showcase` (2026-10-25), Qwen2.5-Instruct (Q4_K_M) via a native llama.cpp server on an
-M1 Pro, 300 calibration and 300 disjoint test examples per run (seed 42). For comparison, a linear baseline without
-any language model (`LinearClassifier`, `-Dshowcase.backend=linear`): TF-IDF features and logistic regression per field, trained on
-examples that occur in neither split. And the same classifier on sentence embeddings (`-Dshowcase.backend=embedding`,
-[bge-m3](https://huggingface.co/BAAI/bge-m3) or Qwen3-Embedding-0.6B via llama.cpp): a frozen pretrained encoder turns
-each text into one vector that also captures context, and only the logistic regression on top is trained.
+From `dukehoff-decide-showcase` (2026-10-29), Qwen2.5-Instruct (Q4_K_M) via a native llama.cpp server on an
+M1 Pro. Every number is a mean over five seeds (42–46, `-Dshowcase.seeds=42,43,44,45,46`); each seed draws its own
+300 calibration and 300 disjoint test examples, and the trained models their own training examples. With 300 test
+cases, single runs move by ±2 to ±4 points from seed to seed, so differences of a point or two are noise. For
+comparison, a linear baseline without any language model (`LinearClassifier`, `-Dshowcase.backend=linear`): TF-IDF
+features and logistic regression per field, trained on examples that occur in neither split. And the same
+classifier on sentence embeddings (`-Dshowcase.backend=embedding`, [bge-m3](https://huggingface.co/BAAI/bge-m3) or
+Qwen3-Embedding-0.6B via llama.cpp): a frozen pretrained encoder turns each text into one vector that also
+captures context, and only the logistic regression on top is trained. Times per message are from single runs
+(2026-10-25).
 
 **Customer messages** ([Bitext](https://huggingface.co/datasets/bitext/Bitext-customer-support-llm-chatbot-training-dataset),
 11 categories plus an "offensive language" flag), labels follow from the text. Temperature only → with per-option
@@ -234,23 +238,22 @@ bias (the default):
 
 | | 1.5B | 7B | linear, 20,000 training examples | most frequent label |
 |---|---:|---:|---:|---:|
-| category accuracy | 83.3% → 87.0% | 87.7% → 91.3% | 100% | 22.0% |
-| whole record decided at threshold 0.9 | 61% → 66% | 68% → 78% | 100% | |
-| accuracy of those | 90.7% → 99.5% | 97.5% → 99.1% | 100% | |
+| category accuracy | 87.8% → 92.7% | 89.2% → 93.4% | 100% | 22.5% |
+| whole record decided at threshold 0.9 | 57% → 70% | 71% → 81% | 100% | |
+| accuracy of those | 93.8% → 99.3% | 96.6% → 98.6% | 100% | |
 | time per message | 0.22 s | 0.98 s | 27 µs | |
 
-Both models over-predict `CONTACT` ("reach customer service"); the fitted bias pushes it down (−2.1 and −1.7),
-which raises its precision from 35% to 53% (1.5B) and from 56% to 78% (7B) without losing any of its cases. The
-bias is fitted on the calibration split and only kept where it beats temperature scaling on the test split, so
-the test numbers are slightly optimistic for the chosen calibrator. Time per message is wall time over the whole
-run, four messages in flight.
+Both models over-predict `CONTACT` ("reach customer service"); the fitted bias pushes it down (−2.1 to −2.8 for
+the 1.5B model, −1.4 to −1.9 for the 7B model) and raises category accuracy by 4 to 5 points. Whether to add the
+bias is decided by cross-validation on the calibration split, so the test split plays no part in the choice. Time
+per message is wall time over the whole run, four messages in flight.
 
-The linear baseline needs labelled data instead of a prompt: 86% category accuracy with 100 training examples,
-98.3% with 300, 100% from 3,000. That is not memorised near-copies: with every training message dropped whose
+The linear baseline needs labelled data instead of a prompt: 87% category accuracy with 100 training examples,
+98% with 300, 99.8% with 1,000. That is not memorised near-copies: with every training message dropped whose
 character-trigram similarity (Jaccard) to a calibration or test message is 0.4 or more (`-Dshowcase.similarity=0.4`,
-three quarters of the candidates), it still reaches 99% from 1,000 examples. Bitext categories are named by a few
-words ("invoice", "refund", "shipping address"), which is easy for word counts. Embeddings reach the same: 100%
-(bge-m3) and 99.7% (Qwen3-Embedding).
+three quarters of the candidates), it still reaches 99% from 1,000 examples (seed 42). Bitext categories are named
+by a few words ("invoice", "refund", "shipping address"), which is easy for word counts. Embeddings reach the same:
+100% (bge-m3) and 99.9% (Qwen3-Embedding).
 
 **Voice assistant requests** ([Amazon MASSIVE 1.1](https://github.com/alexa/massive), CC BY 4.0, crowd-written,
 18 scenarios such as alarm, calendar, music, weather; German is translated from English, so each language runs on
@@ -258,57 +261,60 @@ its own). Harder than Bitext: the scenario is often implied, not named. Temperat
 
 | | 1.5B | 7B | linear, ~15,900 training examples | bge-m3 + linear | most frequent label |
 |---|---:|---:|---:|---:|---:|
-| accuracy, English | 64.3% → 73.3% | 77.3% → 83.0% | 88.3% | 88.3% | 12.0% |
-| accuracy, German | 59.7% → 68.0% | 74.3% → 78.3% | 85.0% | 88.0% | 12.0% |
-| decided at threshold 0.9, English | 31% → 43% | 37% → 58% | 80% | 80% | |
-| accuracy of those | 84.8% → 86.7% | 96.4% → 93.1% | 95.9% | 96.7% | |
-| decided at threshold 0.9, German | 22% → 30% | 28% → 50% | 73% | 70% | |
-| accuracy of those | 82.1% → 91.2% | 94.0% → 89.4% | 96.3% | 95.7% | |
+| accuracy, English | 65.9% → 74.6% | 76.9% → 83.3% | 90.4% | 90.7% | 12.7% |
+| accuracy, German | 62.0% → 70.6% | 74.9% → 78.1% | 87.5% | 89.1% | 12.7% |
+| decided at threshold 0.9, English | 26% → 36% | 35% → 54% | 77% | 74% | |
+| accuracy of those | 90.1% → 93.0% | 95.8% → 95.6% | 97.2% | 97.9% | |
+| decided at threshold 0.9, German | 17% → 25% | 23% → 45% | 74% | 70% | |
+| accuracy of those | 84.5% → 92.9% | 96.4% → 94.8% | 97.4% | 97.1% | |
 
 Here the number of labels decides. The linear model's accuracy by number of training examples (English / German):
-51% / 51% with 100, 66% / 67% with 300, 78% / 76% with 1,000, 82% / 80% with 3,000, 88% / 87% with 10,000. With
+51% / 50% with 100, 68% / 64% with 300, 79% / 78% with 1,000, 85% / 83% with 3,000, 89% / 87% with 10,000. With
 the 300 labelled examples that calibration needs anyway, the language models are clearly better; the linear model
-catches up with the 1.5B model at about 1,000 examples and with the 7B model at about 3,000. The bias mostly
-pushes the models away from `GENERAL` (small talk) and towards `PLAY`; `QA` vs. `GENERAL` is the most common
-confusion. With bias, the 7B model decides more requests at threshold 0.9 but those are slightly less accurate,
-so check `thresholdFor` rather than reusing a threshold. Embeddings need fewer labels than word counts (bge-m3:
-67% / 62% with 100, 77% / 70% with 300, 82% / 79% with 1,000) and, being multilingual, hold up better in German.
-Qwen3-Embedding gets 90.3% / 85.7%. Computing one embedding takes 16–24 ms on the M1 Pro.
+catches up with the 1.5B model below 1,000 examples and with the 7B model at 1,000 (German) to 3,000 (English).
+The bias mostly pushes the models away from `GENERAL` (small talk) and towards `PLAY`; `QA` vs. `GENERAL` is the
+most common confusion. With bias, the 7B model decides far more requests at threshold 0.9, at about one point
+lower accuracy, so check `thresholdFor` rather than reusing a threshold. Embeddings need fewer labels than word
+counts (bge-m3: 67% / 65% with 100, 80% / 76% with 300, 85% / 82% with 1,000), but with all training examples
+they end up level with word counts in English and 1.6 points ahead in German. Qwen3-Embedding gets 90.1% / 86.4%.
+Computing one embedding takes 16–24 ms on the M1 Pro.
 
 **Support tickets** ([Tobi-Bueck/customer-support-tickets](https://huggingface.co/datasets/Tobi-Bueck/customer-support-tickets),
 synthetic, type/queue/priority), where many labels cannot be inferred from the text. Accuracy after calibration:
 
-| | 1.5B | 7B | linear, 19,398 training examples | bge-m3 + linear | most frequent label |
+| | 1.5B | 7B | linear, ~19,400 training examples | bge-m3 + linear | most frequent label |
 |---|---:|---:|---:|---:|---:|
-| type | 65.3% | 60.7% | 83.7% | 79.7% | 38.3% |
-| queue | 33.0% | 26.3% | 54.0% | 44.0% | 26.3% |
-| priority | 39.7% | 38.3% | 59.3% | 39.3% | 39.0% |
+| type | 67.5% | 64.2% | 84.8% | 82.3% | 39.3% |
+| queue | 32.2% | 28.3% | 52.9% | 41.4% | 27.4% |
+| priority | 42.4% | 43.3% | 59.0% | 46.8% | 38.9% |
 
 The language models barely beat always guessing the most frequent label on `queue` and `priority`, yet often
-claim over 99% confidence: raw scores would auto-route 42% (1.5B) to 65% (7B) of tickets at threshold 0.9, with
-under 10% of them fully correct. After calibration, none are auto-routed, which is the right answer. The
+claim over 99% confidence: raw scores would auto-route 42–49% (1.5B) and 61–70% (7B) of tickets at threshold 0.9,
+with 5–12% of them fully correct. After calibration, none are auto-routed, which is the right answer. The
 calibration report flags `queue` and `priority` ("temperature at the limit") and the options that collect most
 errors. The linear model learns how this dataset assigns queues and priorities, which no prompt describes, but
-it is not good enough to auto-route whole tickets either. Embeddings do worse than word counts here (Qwen3-Embedding:
-76.3% / 42.0% / 43.3%): whatever decides queue and priority in this synthetic data is in the words, not the meaning.
+it is not good enough to auto-route whole tickets either (32% of whole tickets correct, none decided at 0.9).
+Embeddings do worse than word counts here (Qwen3-Embedding: 79.7% / 42.8% / 47.8%): whatever decides queue and
+priority in this synthetic data is in the words, not the meaning.
 
 **Consumer complaints** ([CFPB consumer complaint narratives](https://www.consumerfinance.gov/data-research/consumer-complaints/),
 public domain, written by real consumers to the US Consumer Financial Protection Bureau, from the archived export
 September 2023 to March 2024; 10 financial products, 2,500 complaints sampled per product). The longest texts
-(median 117 words, cut at 4,000 characters):
+(median 117 words, cut at 4,000 characters). Temperature only → with per-option bias:
 
 | | 1.5B | 7B | linear, 20,000 training examples | bge-m3 + linear | Qwen3-Embedding + linear | most frequent label |
 |---|---:|---:|---:|---:|---:|---:|
-| accuracy | 64.0% → 65.7% | 70.3% → 74.3% | 78.0% | 82.3% | 80.7% | 10.7% |
-| decided at threshold 0.9 | 5% | 8% → 23% | 50% | 46% | 48% | |
-| accuracy of those | 71.4% → 100% | 100% → 98.5% | 97.3% | 97.1% | 96.6% | |
+| accuracy | 63.5% → 67.0% | 69.3% → 71.7% | 77.2% | 79.3% | 78.9% | 9.1% |
+| decided at threshold 0.9 | 1% → 2% | 2% → 13% | 44% | 41% | 42% | |
+| accuracy of those | 86% → 85% | 100% → 93.0% | 96.9% | 97.3% | 97.3% | |
 | time per complaint | 0.38 s | 1.8 s | 0.4 ms | 54 ms | 105 ms | |
 
-The only dataset where embeddings beat word counts, by 2–4 points. Both need data for it: with 300 training
-examples, word counts get 56% and embeddings 67–70%, below the 7B model; at 3,000, all three are at 73–74%. Every
-method confuses money transfers with checking accounts most often, and many complaints are about both. Times for
-the language models are wall time over the run with four complaints in flight; for embeddings, one request with
-nothing else in flight.
+Embeddings beat word counts by about 2 points, less than the spread between seeds; at threshold 0.9 word counts
+decide slightly more. Both need data: with 300 training examples, word counts get 54% and embeddings 62–65%, well
+below the 7B model; at 3,000, all three are at 70–72%. The language models decide almost nothing on their own here
+(accuracies at 0.9 for the 1.5B model rest on a handful of cases). Every method confuses money transfers with
+checking accounts most often, and many complaints are about both. Times for the language models are wall time
+over the run with four complaints in flight; for embeddings, one request with nothing else in flight.
 
 ### Combining word counts and embeddings
 
