@@ -24,6 +24,7 @@ import com.dukehoff.decide.calibration.Calibration.FieldReport;
 import com.dukehoff.decide.calibration.Calibration;
 import com.dukehoff.decide.classifier.LinearClassifier;
 import com.dukehoff.decide.embedding.EmbeddingClassifier;
+import com.dukehoff.decide.embedding.Embedder;
 import com.dukehoff.decide.embedding.OpenAiEmbedder;
 import com.dukehoff.decide.calibration.CalibrationStore;
 import com.dukehoff.decide.calibration.Calibrator;
@@ -180,10 +181,23 @@ public final class Showcase {
                     cfg.backend().equals("linear") ? linearTrainer() : embeddingTrainer(cfg));
         }
 
-        OpenAiBackend.Builder b = OpenAiBackend.builder().baseUrl(cfg.baseUrl()).model(cfg.model())
-                .maxConcurrency(cfg.concurrency() * dataset.fields().size());
-        if (cfg.apiKey() != null) b.apiKey(cfg.apiKey());
-        CachingBackend backend = new CachingBackend(b.build(), cfg.cache().resolve("scores"));
+        String engine = System.getProperty("showcase.engine", "openai");
+        ScoringBackend scoring;
+        String model;
+        if (engine.equals("modeljars")) {
+            String gguf = System.getProperty("showcase.gguf");
+            if (gguf == null) throw new IllegalArgumentException("Set -Dshowcase.gguf=<path to the GGUF file>");
+            String kernels = System.getProperty("showcase.kernels", "native");
+            scoring = inJvm(gguf, cfg.model() + "@modeljars-" + kernels, kernels);
+            model = "`" + Path.of(gguf).getFileName() + "` inside the JVM (Integrallis Models, " + kernels + " kernels)";
+        } else {
+            OpenAiBackend.Builder b = OpenAiBackend.builder().baseUrl(cfg.baseUrl()).model(cfg.model())
+                    .maxConcurrency(cfg.concurrency() * dataset.fields().size());
+            if (cfg.apiKey() != null) b.apiKey(cfg.apiKey());
+            scoring = b.build();
+            model = "`" + cfg.model() + "` via `" + cfg.baseUrl() + "`";
+        }
+        CachingBackend backend = new CachingBackend(scoring, cfg.cache().resolve("scores"));
 
         DecisionTask<T> uncalibrated = Decider.builder().backend(backend).build().task(dataset.type());
         Latency latency = scoreAll(backend, uncalibrated.schema(), sample, cfg.concurrency());
@@ -194,7 +208,6 @@ public final class Showcase {
         DecisionTask<T> calibrated = Decider.builder().backend(backend).calibration(store).build()
                 .task(dataset.type());
 
-        String model = "`" + cfg.model() + "` via `" + cfg.baseUrl() + "`";
         String report = report(dataset, cfg, model, calibration, test, calibrated, fit, llmLatency(dataset, cfg, latency));
         write(cfg, report);
         return results(cfg.model(), dataset, calibrated, test);
@@ -207,6 +220,44 @@ public final class Showcase {
         r.putAll(row, Seeds.metrics(calibrated.decideAll(test.stream().map(Example::state).toList()),
                 test.stream().map(Example::label).toList(), targets(dataset)));
         return r;
+    }
+
+    /**
+     * Cached embedder: {@code /v1/embeddings} at {@code showcase.embeddingUrl}, or with {@code showcase.engine=modeljars}
+     * and {@code showcase.embeddingGguf} the model inside the JVM (under its own model id, so the caches stay apart).
+     */
+    static CachingEmbedder embedder(Config cfg) {
+        Embedder inner;
+        if (inJvmEmbedding()) {
+            try {
+                inner = (Embedder) Class.forName("com.dukehoff.decide.showcase.InJvm").getMethod("embedder", String.class, String.class)
+                        .invoke(null, System.getProperty("showcase.embeddingGguf"), cfg.embeddingModel() + "@modeljars");
+            } catch (ReflectiveOperationException e) {
+                throw new IllegalStateException("-Dshowcase.engine=modeljars needs a build on JDK 25+ (profile modeljars)", e);
+            }
+        } else {
+            OpenAiEmbedder.Builder b = OpenAiEmbedder.builder().baseUrl(cfg.embeddingUrl()).model(cfg.embeddingModel())
+                    .maxConcurrency(cfg.concurrency()).timeout(Duration.ofMinutes(2));
+            if (cfg.apiKey() != null) b.apiKey(cfg.apiKey());
+            inner = b.build();
+        }
+        return new CachingEmbedder(inner, cfg.cache().resolve("embeddings"));
+    }
+
+    static boolean inJvmEmbedding() {
+        return System.getProperty("showcase.engine", "openai").equals("modeljars") && System.getProperty("showcase.embeddingGguf") != null;
+    }
+
+    /** {@code InJvm} is only compiled on JDK 25 (profile {@code modeljars}), so it is looked up by name. */
+    static ScoringBackend inJvm(String gguf, String modelId, String kernels) {
+        try {
+            return (ScoringBackend) Class.forName("com.dukehoff.decide.showcase.InJvm")
+                    .getMethod("backend", String.class, String.class, String.class).invoke(null, gguf, modelId, kernels);
+        } catch (ClassNotFoundException e) {
+            throw new IllegalStateException("-Dshowcase.engine=modeljars needs a build on JDK 25+ (profile modeljars)", e);
+        } catch (ReflectiveOperationException e) {
+            throw new IllegalStateException(e.getCause() != null ? e.getCause() : e);
+        }
     }
 
     /** Trains a backend without a prompt: features from the text, one logistic regression per field. */
@@ -240,15 +291,12 @@ public final class Showcase {
     }
 
     static Trainer embeddingTrainer(Config cfg) {
-        OpenAiEmbedder.Builder b = OpenAiEmbedder.builder().baseUrl(cfg.embeddingUrl()).model(cfg.embeddingModel())
-                .maxConcurrency(cfg.concurrency()).timeout(Duration.ofMinutes(2));
-        if (cfg.apiKey() != null) b.apiKey(cfg.apiKey());
-        CachingEmbedder embedder = new CachingEmbedder(b.build(), cfg.cache().resolve("embeddings"));
+        CachingEmbedder embedder = embedder(cfg);
         return new Trainer() {
             public String id() { return "embed-" + embedder.modelId().replaceAll("[^A-Za-z0-9._-]+", "_") + "-lr"; }
             public String description() {
-                return "embeddings from `" + embedder.modelId() + "` via `" + cfg.embeddingUrl()
-                        + "` (frozen) + logistic regression per field";
+                return "embeddings from `" + embedder.modelId() + "` " + (inJvmEmbedding() ? "inside the JVM"
+                        : "via `" + cfg.embeddingUrl() + "`") + " (frozen) + logistic regression per field";
             }
             public ScoringBackend train(String modelId, TaskSchema schema, List<State> states,
                                         List<Map<String, Integer>> targets, long seed) {

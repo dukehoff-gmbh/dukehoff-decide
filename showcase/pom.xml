@@ -16,6 +16,8 @@
 
     <properties>
         <maven.deploy.skip>true</maven.deploy.skip>
+        <!-- -Dshowcase.main=com.dukehoff.decide.showcase.Bench for the latency benchmark (profile modeljars) -->
+        <showcase.main>com.dukehoff.decide.showcase.Showcase</showcase.main>
     </properties>
 
     <dependencies>
@@ -53,9 +55,52 @@
                 <artifactId>exec-maven-plugin</artifactId>
                 <version>3.5.0</version>
                 <configuration>
-                    <mainClass>com.dukehoff.decide.showcase.Showcase</mainClass>
+                    <mainClass>${showcase.main}</mainClass>
                 </configuration>
             </plugin>
         </plugins>
     </build>
+
+    <profiles>
+        <!-- -Dshowcase.engine=modeljars: models inside the JVM; needs JDK 25 and
+             the Vector API module and native access in MAVEN_OPTS (see InJvm) -->
+        <profile>
+            <id>modeljars</id>
+            <activation>
+                <jdk>[25,)</jdk>
+            </activation>
+            <properties>
+                <maven.compiler.release>25</maven.compiler.release>
+            </properties>
+            <dependencies>
+                <dependency>
+                    <groupId>com.dukehoff.decide</groupId>
+                    <artifactId>dukehoff-decide-modeljars</artifactId>
+                </dependency>
+                <dependency>
+                    <groupId>com.integrallis</groupId>
+                    <artifactId>backend-native</artifactId>
+                    <version>0.5.12</version>
+                </dependency>
+            </dependencies>
+            <build>
+                <plugins>
+                    <plugin>
+                        <groupId>org.codehaus.mojo</groupId>
+                        <artifactId>build-helper-maven-plugin</artifactId>
+                        <version>3.6.0</version>
+                        <executions>
+                            <execution>
+                                <id>modeljars-sources</id>
+                                <goals><goal>add-source</goal></goals>
+                                <configuration>
+                                    <sources><source>src/modeljars/java</source></sources>
+                                </configuration>
+                            </execution>
+                        </executions>
+                    </plugin>
+                </plugins>
+            </build>
+        </profile>
+    </profiles>
 </project>

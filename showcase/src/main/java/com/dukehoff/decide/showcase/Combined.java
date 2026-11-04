@@ -26,7 +26,6 @@ import com.dukehoff.decide.calibration.Calibration.CalibrationReport;
 import com.dukehoff.decide.calibration.CalibrationStore;
 import com.dukehoff.decide.classifier.LinearClassifier;
 import com.dukehoff.decide.embedding.EmbeddingClassifier;
-import com.dukehoff.decide.embedding.OpenAiEmbedder;
 import com.dukehoff.decide.openai.OpenAiBackend;
 import com.dukehoff.decide.showcase.Showcase.Config;
 import com.dukehoff.decide.showcase.ShowcaseDataset.Example;
@@ -36,7 +35,6 @@ import com.dukehoff.decide.spi.TaskSchema;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.time.Duration;
 import java.time.LocalDate;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -202,10 +200,7 @@ final class Combined {
     }
 
     private static <T> EmbeddingClassifier embedding(Config cfg, TaskSchema schema, List<Example<T>> training, String key) {
-        OpenAiEmbedder.Builder b = OpenAiEmbedder.builder().baseUrl(cfg.embeddingUrl()).model(cfg.embeddingModel())
-                .maxConcurrency(cfg.concurrency()).timeout(Duration.ofMinutes(2));
-        if (cfg.apiKey() != null) b.apiKey(cfg.apiKey());
-        CachingEmbedder embedder = new CachingEmbedder(b.build(), cfg.cache().resolve("embeddings"));
+        CachingEmbedder embedder = Showcase.embedder(cfg);
         Path file = cfg.cache().resolve("models")
                 .resolve("embedding-" + embedder.modelId().replaceAll("[^A-Za-z0-9._-]+", "_") + "-" + key + ".model");
         if (Files.exists(file)) return EmbeddingClassifier.load(file, embedder);

@@ -1,0 +1,68 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <parent>
+        <groupId>com.dukehoff.decide</groupId>
+        <artifactId>dukehoff-decide-parent</artifactId>
+        <version>0.3.0-SNAPSHOT</version>
+    </parent>
+
+    <artifactId>dukehoff-decide-modeljars</artifactId>
+    <name>dukehoff-decide in-JVM backend (Models / ModelJARs)</name>
+    <description>Scoring backend and embedder that run GGUF models inside the JVM with Integrallis Models, no server.</description>
+
+    <properties>
+        <!-- Models needs Java 25 and the incubating Vector API; the module is only built on JDK 25+ -->
+        <maven.compiler.release>25</maven.compiler.release>
+        <models.version>0.5.12</models.version>
+    </properties>
+
+    <dependencies>
+        <dependency>
+            <groupId>com.dukehoff.decide</groupId>
+            <artifactId>dukehoff-decide-core</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>com.dukehoff.decide</groupId>
+            <artifactId>dukehoff-decide-embedding</artifactId>
+            <optional>true</optional>
+        </dependency>
+        <dependency>
+            <groupId>com.integrallis</groupId>
+            <artifactId>models-runtime</artifactId>
+            <version>${models.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>com.integrallis</groupId>
+            <artifactId>backend-java</artifactId>
+            <version>${models.version}</version>
+        </dependency>
+        <dependency>
+            <!-- optional: Rust kernels through FFM, faster than pure Java (see ModelsBackend.Builder#pipeline) -->
+            <groupId>com.integrallis</groupId>
+            <artifactId>backend-native</artifactId>
+            <version>${models.version}</version>
+            <optional>true</optional>
+        </dependency>
+        <dependency>
+            <groupId>org.junit.jupiter</groupId>
+            <artifactId>junit-jupiter</artifactId>
+            <scope>test</scope>
+        </dependency>
+    </dependencies>
+
+    <build>
+        <plugins>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-surefire-plugin</artifactId>
+                <configuration>
+                    <argLine>--add-modules=jdk.incubator.vector --enable-native-access=ALL-UNNAMED</argLine>
+                </configuration>
+            </plugin>
+        </plugins>
+    </build>
+</project>
