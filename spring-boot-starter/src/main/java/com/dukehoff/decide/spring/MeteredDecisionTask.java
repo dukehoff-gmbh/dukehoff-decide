@@ -121,12 +121,27 @@ final class MeteredDecisionTask<T> implements DecisionTask<T> {
     private Gated<T> gated(Gated<T> gated) {
         Counter confident = gatedCounter("confident");
         Counter uncertain = gatedCounter("uncertain");
-        return state -> timed("single", () -> {
-            Outcome<T> outcome = gated.decide(state);
-            recorded(outcome.decision());
-            (outcome instanceof Outcome.Confident<T> ? confident : uncertain).increment();
-            return outcome;
-        });
+        return new Gated<>() {
+            @Override
+            public Outcome<T> decide(State state) {
+                return timed("single", () -> counted(gated.decide(state)));
+            }
+
+            @Override
+            public List<Outcome<T>> decideAll(List<State> states) {
+                return timed("batch", () -> {
+                    List<Outcome<T>> outcomes = gated.decideAll(states);
+                    outcomes.forEach(this::counted);
+                    return outcomes;
+                });
+            }
+
+            private Outcome<T> counted(Outcome<T> outcome) {
+                recorded(outcome.decision());
+                (outcome instanceof Outcome.Confident<T> ? confident : uncertain).increment();
+                return outcome;
+            }
+        };
     }
 
     private Counter gatedCounter(String outcome) {

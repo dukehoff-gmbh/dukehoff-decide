@@ -152,15 +152,26 @@ final class DefaultDecisionTask<T> implements DecisionTask<T> {
             double t = e.getValue();
             if (t < 0 || t > 1) throw new IllegalArgumentException("threshold must be within 0..1: " + e);
         }
-        return state -> {
-            Decision<T> d = decide(state);
-            List<String> uncertain = new ArrayList<>();
-            for (FieldSpec f : schema.fields()) {
-                Double t = thresholds.get(f.name());
-                FieldResult r = d.fields().get(f.name());
-                if (t != null && r.confidence() < t) uncertain.add(f.name());
+        return new Gated<>() {
+            @Override
+            public Outcome<T> decide(State state) {
+                return gate(DefaultDecisionTask.this.decide(state), thresholds);
             }
-            return uncertain.isEmpty() ? new Outcome.Confident<>(d) : new Outcome.Uncertain<>(d, uncertain);
+
+            @Override
+            public List<Outcome<T>> decideAll(List<State> states) {
+                return DefaultDecisionTask.this.decideAll(states).stream().map(d -> gate(d, thresholds)).toList();
+            }
         };
+    }
+
+    private Outcome<T> gate(Decision<T> d, Map<String, Double> thresholds) {
+        List<String> uncertain = new ArrayList<>();
+        for (FieldSpec f : schema.fields()) {
+            Double t = thresholds.get(f.name());
+            FieldResult r = d.fields().get(f.name());
+            if (t != null && r.confidence() < t) uncertain.add(f.name());
+        }
+        return uncertain.isEmpty() ? new Outcome.Confident<>(d) : new Outcome.Uncertain<>(d, uncertain);
     }
 }

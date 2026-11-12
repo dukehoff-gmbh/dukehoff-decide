@@ -164,10 +164,19 @@ similar meaning lie close together, even without shared words. It needs an embed
 the longest text in tokens), and pays off on longer texts written by people
 and in German (see [Results](#results)).
 
+```xml
+<dependency>
+    <groupId>com.dukehoff.decide</groupId>
+    <artifactId>dukehoff-decide-embedding</artifactId>   <!-- brings dukehoff-decide-core and Jackson -->
+    <version>0.3.0</version>
+</dependency>
+```
+
 ```java
 Embedder embedder = OpenAiEmbedder.builder()            // any OpenAI-compatible /v1/embeddings endpoint
         .baseUrl("http://localhost:8081/v1")
         .model("bge-m3")
+        .modelId("bge-m3-q8_0")                          // the weights the server actually loaded
         .build();
 EmbeddingClassifier model = EmbeddingClassifier.train(embedder, Triage.class, labeled);
 model.save(Path.of("src/main/resources/decide/triage.model"));
@@ -176,7 +185,8 @@ ScoringBackend backend = EmbeddingClassifier.load(Path.of(".../triage.model"), e
 ```
 
 The saved model holds the classifier only, not the embedding model; `load` checks that the embedder has the
-model id it was trained with. Implement `Embedder` to use another runtime or to cache vectors.
+model id it was trained with. That id defaults to the `model` name, which llama.cpp ignores, so name the
+quantisation in it: vectors from Q8_0 and F16 weights differ, and the check only catches what the id says. Implement `Embedder` to use another runtime or to cache vectors.
 
 ### Combining backends
 
@@ -191,6 +201,7 @@ Cascade<Triage> triage = Cascade.of(
         embeddingTask.requireConfidence(0.9));
 Outcome<Triage> outcome = triage.decide(state);  // Confident from the first sure stage, else the last Uncertain
 int stage = triage.step(state).stage();          // which stage decided, e.g. for metrics
+List<Outcome<Triage>> all = triage.decideAll(inbox);   // each stage gets the open cases in one batch
 
 // Ensemble: one backend that averages the log-probabilities of its parts, calibrated as a whole.
 ScoringBackend both = Ensemble.of(linear, embedding);

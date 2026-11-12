@@ -52,7 +52,8 @@ import java.util.zip.GZIPOutputStream;
  * longer texts written by people; see the README for when that is worth an embedding server.
  *
  * <pre>{@code
- * Embedder embedder = OpenAiEmbedder.builder().baseUrl("http://localhost:8081/v1").model("bge-m3").build();
+ * Embedder embedder = OpenAiEmbedder.builder().baseUrl("http://localhost:8081/v1").model("bge-m3")
+ *         .modelId("bge-m3-q8_0").build();
  * EmbeddingClassifier model = EmbeddingClassifier.train(embedder, Triage.class, labeled);
  * model.save(Path.of("triage.model"));
  *

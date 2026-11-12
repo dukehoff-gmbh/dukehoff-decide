@@ -16,11 +16,13 @@
 package com.dukehoff.decide;
 
 import com.dukehoff.decide.Fixtures.Priority;
-import com.dukehoff.decide.spi.Ensemble;
+import com.dukehoff.decide.spi.ScoringBackend;
 import com.dukehoff.decide.spi.ScoringBackend.RawScores;
+import com.dukehoff.decide.spi.ScoringBackend.ScoringRequest;
 import com.dukehoff.decide.testing.ScriptedBackend;
 import org.junit.jupiter.api.Test;
 
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 
@@ -80,6 +82,36 @@ class CombiningTest {
         assertEquals(List.of(Decision.VALUE), uncertain.uncertainFields());
         assertEquals(Priority.NORMAL, uncertain.decision().value());
         assertSame(vague.outcome().getClass(), cascade.decide(State.of("hello")).getClass());
+    }
+
+    @Test
+    void cascadeBatchesEachStageOverWhatIsStillOpen() {
+        List<Integer> batches = new ArrayList<>();
+        ScoringBackend counting = new ScoringBackend() {
+            public String modelId() { return meaning.modelId(); }
+            public Map<String, RawScores> score(ScoringRequest request) { return meaning.score(request); }
+            public List<Map<String, RawScores>> scoreAll(List<ScoringRequest> requests) {
+                batches.add(requests.size());
+                return requests.stream().map(meaning::score).toList();
+            }
+        };
+        Cascade<Priority> cascade = Cascade.of(
+                Decider.builder().backend(words).build().task(Priority.class).requireConfidence(0.8),
+                Decider.builder().backend(counting).build().task(Priority.class).requireConfidence(0.8));
+        List<State> states = List.of(State.of("server down"), State.of("login broken"), State.of("hello"),
+                State.of("disk down"));
+
+        List<Cascade.Step<Priority>> steps = cascade.stepAll(states);
+        assertEquals(List.of(2), batches, "the second stage is asked once, for the two open states");
+        assertEquals(List.of(0, 1, 1, 0), steps.stream().map(Cascade.Step::stage).toList());
+        for (int i = 0; i < states.size(); i++) {
+            Cascade.Step<Priority> one = cascade.step(states.get(i));
+            assertEquals(one.stage(), steps.get(i).stage());
+            assertEquals(one.outcome().decision().value(), steps.get(i).outcome().decision().value());
+            assertSame(one.outcome().getClass(), steps.get(i).outcome().getClass());
+        }
+        assertEquals(steps.stream().map(s -> s.outcome().decision().value()).toList(),
+                cascade.decideAll(states).stream().map(o -> o.decision().value()).toList());
     }
 
     @Test

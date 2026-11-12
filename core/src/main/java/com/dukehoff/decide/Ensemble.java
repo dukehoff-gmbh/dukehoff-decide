@@ -13,7 +13,10 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-package com.dukehoff.decide.spi;
+package com.dukehoff.decide;
+
+import com.dukehoff.decide.spi.FieldSpec;
+import com.dukehoff.decide.spi.ScoringBackend;
 
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
@@ -35,7 +38,7 @@ import java.util.stream.Collectors;
  * The ensemble is calibrated like any other backend, under its own {@link #modelId()}; the parts' calibration
  * profiles are not used. Every request goes to every part, through their {@link #scoreAll}, so batching parts
  * still batch. For a cheaper alternative that only asks the next backend when the previous one is unsure, see
- * {@link com.dukehoff.decide.Cascade}.
+ * {@link Cascade}.
  */
 public final class Ensemble implements ScoringBackend {
 

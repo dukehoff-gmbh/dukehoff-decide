@@ -61,5 +61,10 @@ public interface DecisionTask<T> {
 
     interface Gated<T> {
         Outcome<T> decide(State state);
+
+        /** Backends may batch; order of results matches order of input. The default decides one by one. */
+        default List<Outcome<T>> decideAll(List<State> states) {
+            return states.stream().map(this::decide).toList();
+        }
     }
 }

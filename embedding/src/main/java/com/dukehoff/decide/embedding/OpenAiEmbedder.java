@@ -45,8 +45,14 @@ import java.util.concurrent.Semaphore;
  * Embedder embedder = OpenAiEmbedder.builder()
  *         .baseUrl("http://localhost:8081/v1")       // llama-server -hf ggml-org/bge-m3-Q8_0-GGUF --embeddings
  *         .model("bge-m3")
+ *         .modelId("bge-m3-q8_0")                    // the weights actually served, see below
  *         .build();
  * }</pre>
+ *
+ * The {@link #modelId()} defaults to the model name. A trained {@link EmbeddingClassifier} only fits vectors from
+ * the exact weights it was trained on, and checks the id on load. Local servers such as llama.cpp ignore the
+ * {@code model} field and serve whatever they loaded, so set a model id that names the model and its quantisation;
+ * then switching from Q8_0 to F16 is caught instead of silently scoring with different vectors.
  */
 public final class OpenAiEmbedder implements Embedder {
 
@@ -201,7 +207,10 @@ public final class OpenAiEmbedder implements Embedder {
         /** The {@code model} field of the request, e.g. {@code bge-m3} or {@code text-embedding-3-small}. */
         public Builder model(String model) { this.model = model; return this; }
 
-        /** Overrides {@link #modelId()} (default: the model name), e.g. to include the quantisation. */
+        /**
+         * Overrides {@link #modelId()} (default: the model name). Include the quantisation, e.g. {@code bge-m3-q8_0},
+         * when the server decides which weights it serves.
+         */
         public Builder modelId(String modelId) { this.modelId = modelId; return this; }
 
         /** Texts per request. Default 32. */

@@ -19,6 +19,7 @@ import com.dukehoff.decide.Cascade;
 import com.dukehoff.decide.Decider;
 import com.dukehoff.decide.Decision;
 import com.dukehoff.decide.DecisionTask;
+import com.dukehoff.decide.Ensemble;
 import com.dukehoff.decide.Outcome;
 import com.dukehoff.decide.State;
 import com.dukehoff.decide.calibration.Calibration;
@@ -30,7 +31,6 @@ import com.dukehoff.decide.embedding.OpenAiEmbedder;
 import com.dukehoff.decide.openai.OpenAiBackend;
 import com.dukehoff.decide.showcase.Showcase.Config;
 import com.dukehoff.decide.showcase.ShowcaseDataset.Example;
-import com.dukehoff.decide.spi.Ensemble;
 import com.dukehoff.decide.spi.ScoringBackend;
 import com.dukehoff.decide.spi.TaskSchema;
 
