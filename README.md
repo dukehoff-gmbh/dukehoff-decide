@@ -161,8 +161,8 @@ rate, regularisation, the number of hash buckets and the seed.
 instead of word counts. An embedding model, which stays frozen, turns each text into one vector in which texts with
 similar meaning lie close together, even without shared words. It needs an embedding server, e.g.
 `llama-server -hf ggml-org/bge-m3-Q8_0-GGUF --embeddings --port 8081 -ub 8192 -b 8192` (the batch sizes must hold
-the longest text in tokens), and pays off on longer texts written by people
-and in German (see [Results](#results)).
+the longest text in tokens), and pays off on longer texts written by people; on German text it is a little
+ahead of word counts (see [Results](#results)).
 
 ```xml
 <dependency>
@@ -219,8 +219,8 @@ Summary of the [results](#results) below, all calibrated and gated the same way:
 | | prompted language model | word counts + logistic regression (`LinearClassifier`) | sentence embeddings + logistic regression (`EmbeddingClassifier`) |
 |---|---|---|---|
 | labelled data | a few hundred, for calibration | a few thousand | a few thousand, fewer than word counts |
-| accuracy | behind both once there are enough labels | as good as embeddings on short texts, a few points behind on long ones | best on long texts written by people, and in German |
-| time per decision (M1 Pro) | 0.2–2 s | under 1 ms | 20–100 ms (one embedding) |
+| accuracy | behind both once there are enough labels | as good as embeddings on short texts, a few points behind on long ones | best on long texts written by people, a little ahead on German text |
+| time per decision (M1 Pro) | 0.2–2.5 s | under 1 ms | 20–90 ms (one embedding) |
 | needs | a model server with logprobs | nothing | an embedding server |
 | changing the question | edit `@Question`/`@Option`, recalibrate | relabel and retrain | relabel and retrain |
 
@@ -240,8 +240,9 @@ comparison, a linear baseline without any language model (`LinearClassifier`, `-
 features and logistic regression per field, trained on examples that occur in neither split. And the same
 classifier on sentence embeddings (`-Dshowcase.backend=embedding`, [bge-m3](https://huggingface.co/BAAI/bge-m3) or
 Qwen3-Embedding-0.6B via llama.cpp): a frozen pretrained encoder turns each text into one vector that also
-captures context, and only the logistic regression on top is trained. Times per message are from single runs
-(2026-10-25).
+captures context, and only the logistic regression on top is trained. Times are medians per message with one
+message in flight and nothing cached (50 to 100 messages, M1 Pro, llama.cpp on Metal, 2026-11-12, `Bench`, see
+[Running the showcase](#running-the-showcase)); a language model gets the fields of a message in parallel.
 
 **Customer messages** ([Bitext](https://huggingface.co/datasets/bitext/Bitext-customer-support-llm-chatbot-training-dataset),
 11 categories plus an "offensive language" flag), labels follow from the text. Temperature only → with per-option
@@ -252,12 +253,11 @@ bias (the default):
 | category accuracy | 87.8% → 92.7% | 89.2% → 93.4% | 100% | 22.5% |
 | whole record decided at threshold 0.9 | 57% → 70% | 71% → 81% | 100% | |
 | accuracy of those | 93.8% → 99.3% | 96.6% → 98.6% | 100% | |
-| time per message | 0.22 s | 0.98 s | 27 µs | |
+| time per message | 0.23 s | 1.0 s | 47 µs | |
 
 Both models over-predict `CONTACT` ("reach customer service"); the fitted bias pushes it down (−2.1 to −2.8 for
 the 1.5B model, −1.4 to −1.9 for the 7B model) and raises category accuracy by 4 to 5 points. Whether to add the
-bias is decided by cross-validation on the calibration split, so the test split plays no part in the choice. Time
-per message is wall time over the whole run, four messages in flight.
+bias is decided by cross-validation on the calibration split, so the test split plays no part in the choice.
 
 The linear baseline needs labelled data instead of a prompt: 87% category accuracy with 100 training examples,
 98% with 300, 99.8% with 1,000. That is not memorised near-copies: with every training message dropped whose
@@ -288,7 +288,7 @@ most common confusion. With bias, the 7B model decides far more requests at thre
 lower accuracy, so check `thresholdFor` rather than reusing a threshold. Embeddings need fewer labels than word
 counts (bge-m3: 67% / 65% with 100, 80% / 76% with 300, 85% / 82% with 1,000), but with all training examples
 they end up level with word counts in English and 1.6 points ahead in German. Qwen3-Embedding gets 90.1% / 86.4%.
-Computing one embedding takes 16–24 ms on the M1 Pro.
+A decision with embeddings takes 17–23 ms on the M1 Pro, almost all of it the embedding request.
 
 **Support tickets** ([Tobi-Bueck/customer-support-tickets](https://huggingface.co/datasets/Tobi-Bueck/customer-support-tickets),
 synthetic). The task is to sort each ticket by type, queue and priority. The data supports only part of that:
@@ -333,14 +333,14 @@ September 2023 to March 2024; 10 financial products, 2,500 complaints sampled pe
 | accuracy | 63.5% → 67.0% | 69.3% → 71.7% | 77.2% | 79.3% | 78.9% | 9.1% |
 | decided at threshold 0.9 | 1% → 2% | 2% → 13% | 44% | 41% | 42% | |
 | accuracy of those | 86% → 85% | 100% → 93.0% | 96.9% | 97.3% | 97.3% | |
-| time per complaint | 0.38 s | 1.8 s | 0.4 ms | 54 ms | 105 ms | |
+| time per complaint | 0.35 s | 1.6 s | 0.4 ms | 60 ms | 92 ms | |
 
 Embeddings beat word counts by about 2 points, less than the spread between seeds; at threshold 0.9 word counts
 decide slightly more. Both need data: with 300 training examples, word counts get 54% and embeddings 62–65%, well
 below the 7B model; at 3,000, all three are at 70–72%. The language models decide almost nothing on their own here
 (accuracies at 0.9 for the 1.5B model rest on a handful of cases). Every method confuses money transfers with
-checking accounts most often, and many complaints are about both. Times for the language models are wall time
-over the run with four complaints in flight; for embeddings, one request with nothing else in flight.
+checking accounts most often, and many complaints are about both. Long complaints take longer: the slowest 5%
+need 0.7 s and 3.2 s with the language models and 0.23 s and 0.32 s with the embeddings.
 
 ### Combining word counts and embeddings
 
@@ -475,6 +475,8 @@ endpoint (`-Dshowcase.embeddingUrl=http://localhost:8081/v1`, `-Dshowcase.embedd
 `-Dshowcase.backend=combine -Dshowcase.combine=linear,embedding[,llm]` compares single backends, their ensemble and
 the cascade in that order. `-Dshowcase.seeds=42,43,44,45,46` repeats any run per seed and writes `seeds.md` with
 mean, standard deviation and range.
+`-Dshowcase.main=com.dukehoff.decide.showcase.Bench` measures the time per decision for the same options, with one
+example in flight and nothing cached (`-Dbench.n`, `-Dbench.warmup`), and prints one table row.
 Datasets are downloaded on first run and keep their own licenses (tickets: CC BY-NC 4.0, Bitext: CDLA-Sharing-1.0,
 MASSIVE: CC BY 4.0, CFPB: public domain).
 

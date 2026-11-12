@@ -16,6 +16,8 @@
 
     <properties>
         <maven.deploy.skip>true</maven.deploy.skip>
+        <!-- -Dshowcase.main=com.dukehoff.decide.showcase.Bench for the latency benchmark -->
+        <showcase.main>com.dukehoff.decide.showcase.Showcase</showcase.main>
     </properties>
 
     <dependencies>
@@ -53,7 +55,7 @@
                 <artifactId>exec-maven-plugin</artifactId>
                 <version>3.5.0</version>
                 <configuration>
-                    <mainClass>com.dukehoff.decide.showcase.Showcase</mainClass>
+                    <mainClass>${showcase.main}</mainClass>
                 </configuration>
             </plugin>
         </plugins>
