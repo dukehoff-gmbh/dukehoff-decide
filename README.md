@@ -71,7 +71,7 @@ ollama pull qwen2.5:1.5b
 <dependency>
     <groupId>com.dukehoff.decide</groupId>
     <artifactId>dukehoff-decide-openai</artifactId>   <!-- brings dukehoff-decide-core -->
-    <version>0.2.0</version>
+    <version>0.3.0</version>
 </dependency>
 ```
 
@@ -133,7 +133,7 @@ needs no model server and has no dependencies besides `dukehoff-decide-core`:
 <dependency>
     <groupId>com.dukehoff.decide</groupId>
     <artifactId>dukehoff-decide-classifier</artifactId>
-    <version>0.2.0</version>
+    <version>0.3.0</version>
 </dependency>
 ```
 
@@ -395,7 +395,7 @@ ensemble makes it worse; as a third cascade stage it adds a few points at lower 
 <dependency>
     <groupId>com.dukehoff.decide</groupId>
     <artifactId>dukehoff-decide-spring-boot-starter</artifactId>
-    <version>0.2.0</version>
+    <version>0.3.0</version>
 </dependency>
 ```
 
