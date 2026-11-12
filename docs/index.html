@@ -1,0 +1,431 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>dukehoff-decide</title>
+<meta name="description" content="Type-safe, calibrated decisions for Java, from small language models or from classifiers trained on your own data.">
+<meta property="og:title" content="dukehoff-decide">
+<meta property="og:description" content="Type-safe, calibrated decisions for Java, from small language models or from classifiers trained on your own data.">
+<meta property="og:image" content="social-preview.png">
+<link rel="icon" href="dukehoff-decide-logo.svg" type="image/svg+xml">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --navy: #042355;
+    --blue: #0c46a3;
+    --yellow: #fece5e;
+    --green: #00a83d;
+
+    --bg: #f8f9fa;
+    --surface: #ffffff;
+    --surface-2: #eef1f8;
+    --text: #0f1b33;
+    --muted: #4a5875;
+    --border: #d5dbe8;
+    --accent: var(--blue);
+    --accent-text: #ffffff;
+    --link: #0c46a3;
+    --code-bg: #0b1a3a;
+    --code-text: #e6ebf5;
+    --code-comment: #8fa0c4;
+    --code-key: #fece5e;
+    --code-ann: #7fd6a0;
+    --code-str: #f6b6bc;
+    --ok: #007a2c;
+    --ring: #fece5e;
+    --shadow: 0 1px 2px rgba(4, 35, 85, .06), 0 8px 24px rgba(4, 35, 85, .06);
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #081227;
+      --surface: #0e1c3a;
+      --surface-2: #132547;
+      --text: #eef2fa;
+      --muted: #a9b6d3;
+      --border: #24365e;
+      --accent: #fece5e;
+      --accent-text: #042355;
+      --link: #9cc0ff;
+      --code-bg: #050d1f;
+      --ok: #4ade80;
+      --shadow: none;
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #081227;
+    --surface: #0e1c3a;
+    --surface-2: #132547;
+    --text: #eef2fa;
+    --muted: #a9b6d3;
+    --border: #24365e;
+    --accent: #fece5e;
+    --accent-text: #042355;
+    --link: #9cc0ff;
+    --code-bg: #050d1f;
+    --ok: #4ade80;
+    --shadow: none;
+  }
+
+  *, *::before, *::after { box-sizing: border-box; }
+  html { scroll-behavior: smooth; }
+  @media (prefers-reduced-motion: reduce) { html { scroll-behavior: auto; } * { transition: none !important; } }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font: 400 17px/1.6 "IBM Plex Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
+    -webkit-font-smoothing: antialiased;
+  }
+  h1, h2, h3 { font-family: "JetBrains Mono", ui-monospace, monospace; line-height: 1.2; letter-spacing: -.01em; }
+  h2 { font-size: clamp(1.5rem, 3vw, 2rem); margin: 0 0 .5rem; }
+  h3 { font-size: 1.05rem; margin: 0 0 .4rem; }
+  p { margin: 0 0 1rem; }
+  a { color: var(--link); text-underline-offset: 3px; }
+  a:focus-visible, button:focus-visible { outline: 3px solid var(--ring); outline-offset: 3px; border-radius: 6px; }
+  code, pre { font-family: "JetBrains Mono", ui-monospace, monospace; }
+  :not(pre) > code { font-size: .88em; background: var(--surface-2); padding: .1em .35em; border-radius: 4px; }
+
+  .wrap { max-width: 1120px; margin: 0 auto; padding: 0 16px; }
+  @media (min-width: 768px) { .wrap { padding: 0 32px; } }
+
+  .skip { position: absolute; left: -999px; }
+  .skip:focus { left: 16px; top: 16px; background: var(--surface); padding: .5rem 1rem; z-index: 10; }
+
+  header.top { position: sticky; top: 0; z-index: 5; background: color-mix(in srgb, var(--bg) 88%, transparent);
+    backdrop-filter: blur(8px); border-bottom: 1px solid var(--border); }
+  header.top .wrap { display: flex; align-items: center; gap: 1rem; min-height: 60px; }
+  .brand { display: flex; align-items: center; gap: .6rem; font: 700 1rem "JetBrains Mono", monospace;
+    color: var(--text); text-decoration: none; }
+  .brand img { width: 32px; height: 32px; }
+  nav.links { margin-left: auto; display: flex; gap: .25rem; flex-wrap: wrap; }
+  nav.links a { color: var(--muted); text-decoration: none; padding: .55rem .7rem; border-radius: 6px; font-size: .95rem; }
+  nav.links a:hover { color: var(--text); background: var(--surface-2); }
+  @media (max-width: 720px) { nav.links a.opt { display: none; } }
+
+  .hero { padding: 64px 0 48px; }
+  .hero .grid { display: grid; gap: 40px; align-items: center; }
+  @media (min-width: 960px) { .hero .grid { grid-template-columns: 1fr 1.2fr; } }
+  .hero .grid > *, .split > *, .cards > * { min-width: 0; }
+  .eyebrow { display: inline-flex; align-items: center; gap: .5rem; font: 500 .8rem "JetBrains Mono", monospace;
+    color: var(--muted); border: 1px solid var(--border); border-radius: 999px; padding: .25rem .75rem; margin-bottom: 1.25rem; }
+  .eyebrow .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--ok); }
+  .hero h1 { font-size: clamp(1.9rem, 4vw, 2.7rem); margin: 0 0 1rem; }
+  .hero h1 .hl { background: linear-gradient(transparent 62%, color-mix(in srgb, var(--yellow) 70%, transparent) 62%); }
+  .lead { font-size: 1.15rem; color: var(--muted); max-width: 36rem; }
+  .ctas { display: flex; flex-wrap: wrap; gap: .75rem; margin: 1.75rem 0 1.5rem; }
+  .btn { display: inline-flex; align-items: center; gap: .5rem; min-height: 44px; padding: .6rem 1.15rem;
+    border-radius: 8px; font-weight: 600; text-decoration: none; border: 1px solid transparent; cursor: pointer;
+    transition: transform .15s ease, background-color .2s ease, border-color .2s ease; }
+  .btn:hover { transform: translateY(-1px); }
+  .btn.primary { background: var(--accent); color: var(--accent-text); }
+  .btn.ghost { color: var(--text); border-color: var(--border); background: var(--surface); }
+  .btn.ghost:hover { border-color: var(--muted); }
+  .btn svg { width: 18px; height: 18px; }
+
+  .maven { display: flex; align-items: stretch; border: 1px solid var(--border); border-radius: 8px;
+    background: var(--surface); max-width: 36rem; overflow: hidden; }
+  .maven pre { margin: 0; padding: .7rem .9rem; font-size: .8rem; overflow-x: auto; flex: 1; color: var(--text); }
+  .copy { border: 0; border-left: 1px solid var(--border); background: var(--surface-2); color: var(--muted);
+    min-width: 72px; font: 500 .8rem "JetBrains Mono", monospace; cursor: pointer; }
+  .copy:hover { color: var(--text); }
+
+  .code { background: var(--code-bg); color: var(--code-text); border-radius: 12px; box-shadow: var(--shadow);
+    border: 1px solid color-mix(in srgb, var(--code-bg) 70%, var(--border)); overflow: hidden; }
+  .code .bar { display: flex; align-items: center; gap: .4rem; padding: .6rem .9rem; border-bottom: 1px solid rgba(255,255,255,.08);
+    font: 500 .75rem "JetBrains Mono", monospace; color: var(--code-comment); }
+  .code .bar i { width: 10px; height: 10px; border-radius: 50%; background: rgba(255,255,255,.16); display: inline-block; }
+  .code pre { margin: 0; padding: 1rem 1.1rem 1.2rem; font-size: .78rem; line-height: 1.65; overflow-x: auto; }
+  .c { color: var(--code-comment); } .k { color: var(--code-key); } .a { color: var(--code-ann); } .s { color: var(--code-str); }
+
+  section { padding: 64px 0; }
+  section.alt { background: var(--surface); border-top: 1px solid var(--border); border-bottom: 1px solid var(--border); }
+  .sub { color: var(--muted); max-width: 46rem; margin-bottom: 2rem; }
+
+  .cards { display: grid; gap: 16px; grid-template-columns: 1fr; }
+  @media (min-width: 680px) { .cards.two { grid-template-columns: 1fr 1fr; } .cards.three, .cards.four { grid-template-columns: 1fr 1fr; } }
+  @media (min-width: 1000px) { .cards.three { grid-template-columns: repeat(3, 1fr); } .cards.four { grid-template-columns: repeat(4, 1fr); } }
+  .card { background: var(--bg); border: 1px solid var(--border); border-radius: 12px; padding: 1.25rem 1.25rem 1rem; }
+  section:not(.alt) .card { background: var(--surface); box-shadow: var(--shadow); }
+  .card p { color: var(--muted); font-size: .97rem; }
+  .icon { width: 40px; height: 40px; border-radius: 10px; display: grid; place-items: center; margin-bottom: .9rem;
+    background: color-mix(in srgb, var(--blue) 12%, transparent); color: var(--link); }
+  .icon svg { width: 22px; height: 22px; }
+  .step { font: 700 .8rem "JetBrains Mono", monospace; color: var(--link); margin-bottom: .35rem; display: block; }
+  .tag { display: inline-block; font: 500 .72rem "JetBrains Mono", monospace; color: var(--muted);
+    border: 1px solid var(--border); border-radius: 999px; padding: .1rem .55rem; margin-bottom: .6rem; }
+
+  .split { display: grid; gap: 32px; align-items: start; }
+  @media (min-width: 960px) { .split { grid-template-columns: 1fr 1fr; } }
+  ul.checks { list-style: none; padding: 0; margin: 0; }
+  ul.checks li { position: relative; padding-left: 1.8rem; margin-bottom: .75rem; color: var(--muted); }
+  ul.checks li strong { color: var(--text); font-weight: 600; }
+  ul.checks li::before { content: ""; position: absolute; left: 0; top: .35em; width: 1.1rem; height: 1.1rem; border-radius: 50%;
+    background: var(--ok) url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='white' stroke-width='3.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M5 12l5 5L20 7'/%3E%3C/svg%3E") center / 70% no-repeat; }
+
+  .table-wrap { overflow-x: auto; border: 1px solid var(--border); border-radius: 12px; background: var(--surface); }
+  table { border-collapse: collapse; width: 100%; min-width: 640px; font-size: .95rem; }
+  th, td { padding: .75rem 1rem; text-align: right; border-bottom: 1px solid var(--border); white-space: nowrap; }
+  th:first-child, td:first-child { text-align: left; }
+  thead th { font: 600 .8rem "JetBrains Mono", monospace; color: var(--muted); background: var(--surface-2); }
+  tbody tr:last-child td { border-bottom: 0; }
+  td.best { font-weight: 700; color: var(--ok); }
+  td small { color: var(--muted); font-size: .85em; }
+  .note { color: var(--muted); font-size: .9rem; margin-top: 1rem; }
+
+  .stats { display: grid; gap: 16px; grid-template-columns: 1fr; margin-bottom: 2rem; }
+  @media (min-width: 680px) { .stats { grid-template-columns: repeat(3, 1fr); } }
+  .stat { border-left: 4px solid var(--yellow); padding: .25rem 0 .25rem 1rem; }
+  .stat b { display: block; font: 700 2rem "JetBrains Mono", monospace; color: var(--text); }
+  .stat span { color: var(--muted); font-size: .95rem; }
+
+  .modules { display: grid; gap: 10px; }
+  .module { display: grid; gap: .25rem; padding: .9rem 1rem; border: 1px solid var(--border); border-radius: 10px; background: var(--bg); }
+  @media (min-width: 760px) { .module { grid-template-columns: 22rem 1fr; gap: 1rem; align-items: baseline; } }
+  .module code { background: none; padding: 0; font-size: .88rem; font-weight: 500; color: var(--text); }
+  .module span { color: var(--muted); font-size: .95rem; }
+
+  .cta-band { text-align: center; }
+  .cta-band .ctas { justify-content: center; }
+
+  footer { border-top: 1px solid var(--border); padding: 28px 0 40px; color: var(--muted); font-size: .9rem; }
+  footer .wrap { display: flex; flex-wrap: wrap; gap: 1rem; justify-content: space-between; align-items: center; }
+  footer a { color: var(--muted); }
+</style>
+</head>
+<body>
+<a class="skip" href="#main">Skip to content</a>
+
+<header class="top">
+  <div class="wrap">
+    <a class="brand" href="#top"><img src="dukehoff-decide-logo.svg" alt="" width="32" height="32">dukehoff-decide</a>
+    <nav class="links" aria-label="Sections">
+      <a class="opt" href="#how">How it works</a>
+      <a class="opt" href="#backends">Backends</a>
+      <a class="opt" href="#results">Results</a>
+      <a href="https://github.com/dukehoff-gmbh/dukehoff-decide">GitHub</a>
+    </nav>
+  </div>
+</header>
+
+<main id="main">
+  <div class="hero" id="top">
+    <div class="wrap grid">
+      <div>
+        <span class="eyebrow"><span class="dot" aria-hidden="true"></span>Java 21 · Apache 2.0 · on Maven Central</span>
+        <h1>Typed, <span class="hl">calibrated</span> decisions for Java</h1>
+        <p class="lead">Turn "which team handles this ticket?" into a Java type. You get a valid value, probabilities
+          you can rely on, and a gate that sends uncertain cases to a human, from a small local language model or a
+          classifier trained on your own data.</p>
+        <div class="ctas">
+          <a class="btn primary" href="https://github.com/dukehoff-gmbh/dukehoff-decide#getting-started">Get started
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12h14M13 6l6 6-6 6"/></svg></a>
+          <a class="btn ghost" href="https://github.com/dukehoff-gmbh/dukehoff-decide">
+            <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 .5a11.5 11.5 0 0 0-3.64 22.41c.58.11.79-.25.79-.56v-2c-3.2.7-3.88-1.37-3.88-1.37-.53-1.33-1.3-1.69-1.3-1.69-1.05-.72.08-.7.08-.7 1.16.08 1.78 1.2 1.78 1.2 1.03 1.77 2.71 1.26 3.37.96.1-.75.4-1.26.73-1.55-2.55-.29-5.24-1.28-5.24-5.69 0-1.26.45-2.29 1.19-3.1-.12-.29-.52-1.46.11-3.05 0 0 .97-.31 3.17 1.18a11 11 0 0 1 5.77 0c2.2-1.49 3.17-1.18 3.17-1.18.63 1.59.23 2.76.11 3.05.74.81 1.19 1.84 1.19 3.1 0 4.42-2.69 5.39-5.26 5.68.41.36.78 1.06.78 2.14v3.17c0 .31.21.68.8.56A11.5 11.5 0 0 0 12 .5z"/></svg>
+            View on GitHub</a>
+        </div>
+        <div class="maven">
+          <pre id="maven-snippet">&lt;dependency&gt;
+  &lt;groupId&gt;com.dukehoff.decide&lt;/groupId&gt;
+  &lt;artifactId&gt;dukehoff-decide-openai&lt;/artifactId&gt;
+  &lt;version&gt;0.3.0&lt;/version&gt;
+&lt;/dependency&gt;</pre>
+          <button class="copy" type="button" data-copy="maven-snippet" aria-label="Copy Maven dependency">Copy</button>
+        </div>
+      </div>
+
+      <div class="code" role="region" aria-label="Example code">
+        <div class="bar"><i></i><i></i><i></i><span>Triage.java</span></div>
+<pre><code><span class="a">@Question</span>(<span class="s">"Triage an incoming customer support ticket"</span>)
+<span class="k">record</span> Triage(
+    <span class="a">@Question</span>(<span class="s">"How urgent is this ticket?"</span>) Priority priority,
+    <span class="a">@Question</span>(<span class="s">"Which team should handle it?"</span>) Team team,
+    <span class="a">@Question</span>(<span class="s">"Does the customer threaten to cancel?"</span>)
+    <span class="k">boolean</span> churnRisk) {}
+
+DecisionTask&lt;Triage&gt; triage = decider.task(Triage.<span class="k">class</span>);
+
+Decision&lt;Triage&gt; d = triage.decide(State.of(ticketText));
+d.value();                    <span class="c">// always a valid Triage</span>
+d.distribution(<span class="s">"priority"</span>);   <span class="c">// Map&lt;Priority, Double&gt;</span>
+
+<span class="k">switch</span> (triage.requireConfidence(<span class="s">0.9</span>).decide(state)) {
+    <span class="k">case</span> Outcome.Confident&lt;Triage&gt;(<span class="k">var</span> dec) -&gt; route(dec.value());
+    <span class="k">case</span> Outcome.Uncertain&lt;Triage&gt;(<span class="k">var</span> dec, <span class="k">var</span> why) -&gt; toHuman(dec, why);
+}</code></pre>
+      </div>
+    </div>
+  </div>
+
+  <section class="alt" id="why" aria-labelledby="why-h">
+    <div class="wrap">
+      <h2 id="why-h">Most questions to an LLM have a few right answers</h2>
+      <p class="sub">"Which team handles this ticket", "is this spam", "how relevant is this document": the answer is
+        one of a handful of options. Generating free text for that is slow, hard to parse and impossible to trust.
+        dukehoff-decide asks for exactly that choice and tells you how sure it is.</p>
+      <div class="cards three">
+        <div class="card">
+          <div class="icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M16 18l6-6-6-6M8 6l-6 6 6 6"/></svg></div>
+          <h3>Always a valid value</h3>
+          <p>Enums, booleans and scales become typed fields. No parsing, no hallucinated categories, no retries.</p>
+        </div>
+        <div class="card">
+          <div class="icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 3v18h18"/><path d="M7 15l4-4 3 3 5-6"/></svg></div>
+          <h3>Probabilities you can rely on</h3>
+          <p>Calibrated on a few hundred labelled cases, so 90% confidence means about 90% correct.</p>
+        </div>
+        <div class="card">
+          <div class="icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><path d="M9 12l2 2 4-4"/></svg></div>
+          <h3>A gate for the unsure cases</h3>
+          <p>Decide the confident cases automatically and send the rest to a human, with a threshold measured on your data.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section id="how" aria-labelledby="how-h">
+    <div class="wrap">
+      <h2 id="how-h">How it works</h2>
+      <p class="sub">One annotated type, one pluggable backend, one calibration step.</p>
+      <div class="cards four">
+        <div class="card"><span class="step">01 · Schema</span><h3>Type → questions</h3>
+          <p>Every field becomes "pick one of N options": yes/no, one option per enum constant, one per <code>@Scale</code> step.</p></div>
+        <div class="card"><span class="step">02 · Backend</span><h3>Scores per option</h3>
+          <p>A <code>ScoringBackend</code> returns log-probabilities per option: a language model's next token, or a trained classifier.</p></div>
+        <div class="card"><span class="step">03 · Calibration</span><h3>Honest confidence</h3>
+          <p><code>Calibration.fit</code> fits temperature and per-option bias, reports accuracy, ECE, confusions and the threshold for a target accuracy.</p></div>
+        <div class="card"><span class="step">04 · Binding</span><h3>Typed value + gate</h3>
+          <p>Calibrated probabilities become the record, per-field distributions, and a confident or uncertain outcome.</p></div>
+      </div>
+    </div>
+  </section>
+
+  <section class="alt" id="backends" aria-labelledby="backends-h">
+    <div class="wrap">
+      <h2 id="backends-h">Start with a language model, switch when the labels are there</h2>
+      <p class="sub">Calibration, gating and diagnostics are the same for every backend, so the code that uses the
+        decisions never changes.</p>
+      <div class="cards three">
+        <div class="card">
+          <span class="tag">dukehoff-decide-openai</span>
+          <h3>Small language model</h3>
+          <p>Works from day one with only the question and option texts. Any OpenAI-compatible server with logprobs:
+            llama.cpp, Ollama, vLLM, LM Studio.</p>
+        </div>
+        <div class="card">
+          <span class="tag">dukehoff-decide-classifier</span>
+          <h3>Word counts + logistic regression</h3>
+          <p><code>LinearClassifier</code> trains in seconds on a few thousand labelled cases, scores in well under a
+            millisecond and needs no server and no dependencies.</p>
+        </div>
+        <div class="card">
+          <span class="tag">dukehoff-decide-embedding</span>
+          <h3>Sentence embeddings + logistic regression</h3>
+          <p><code>EmbeddingClassifier</code> on a frozen embedding model: best on longer texts written by people,
+            and in German.</p>
+        </div>
+      </div>
+
+      <div class="split" style="margin-top:40px">
+        <div>
+          <h3 style="font-size:1.25rem">Combine them</h3>
+          <p class="sub" style="margin-bottom:1rem">Word counts and embeddings are unsure about different cases. A
+            <code>Cascade</code> lets the cheap backend decide what it is sure about and passes only the rest on,
+            in one batch per stage. An <code>Ensemble</code> averages its parts and is calibrated as a whole.</p>
+          <ul class="checks">
+            <li><strong>Each stage calibrated on its own</strong>, with its own threshold.</li>
+            <li><strong>The embedding is only computed</strong> for the cases the linear model is unsure about.</li>
+            <li><strong>A language model fits as the last stage</strong>, for the few cases both classifiers leave.</li>
+          </ul>
+        </div>
+        <div class="code" role="region" aria-label="Cascade example">
+          <div class="bar"><i></i><i></i><i></i><span>Cascade</span></div>
+<pre><code>Cascade&lt;Triage&gt; triage = Cascade.of(
+        linearTask.requireConfidence(<span class="s">0.9</span>),
+        embeddingTask.requireConfidence(<span class="s">0.9</span>));
+
+Outcome&lt;Triage&gt; outcome = triage.decide(state);
+List&lt;Outcome&lt;Triage&gt;&gt; all = triage.decideAll(inbox);
+
+<span class="c">// or one backend, calibrated as a whole</span>
+ScoringBackend both = Ensemble.of(linear, embedding);</code></pre>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section id="results" aria-labelledby="results-h">
+    <div class="wrap">
+      <h2 id="results-h">Measured on public data</h2>
+      <p class="sub">Whole records decided automatically at a confidence threshold of 0.9, with the accuracy of those
+        decisions. Means over five seeds, 300 test cases each, from the
+        <a href="https://github.com/dukehoff-gmbh/dukehoff-decide#results">showcase</a>.</p>
+      <div class="stats">
+        <div class="stat"><b>85.9%</b><span>of MASSIVE requests (English) decided automatically, 96.7% of them correct</span></div>
+        <div class="stat"><b>+8.6–10.1</b><span>points more decided by the cascade than by word counts alone</span></div>
+        <div class="stat"><b>0</b><span>model servers needed for word counts: one JAR, microseconds per decision</span></div>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <caption class="skip">Share decided at threshold 0.9 and accuracy of those, per dataset and backend</caption>
+          <thead><tr><th scope="col">dataset</th><th scope="col">word counts</th><th scope="col">bge-m3 embeddings</th><th scope="col">ensemble</th><th scope="col">cascade</th></tr></thead>
+          <tbody>
+            <tr><td>CFPB complaints</td><td>44.2% <small>(96.9%)</small></td><td>40.5% <small>(97.3%)</small></td><td>49.7% <small>(97.3%)</small></td><td class="best">54.3% <small>(96.3%)</small></td></tr>
+            <tr><td>MASSIVE, English</td><td>77.1% <small>(97.2%)</small></td><td>74.2% <small>(97.9%)</small></td><td>80.9% <small>(98.1%)</small></td><td class="best">85.9% <small>(96.7%)</small></td></tr>
+            <tr><td>MASSIVE, German</td><td>73.5% <small>(97.4%)</small></td><td>70.3% <small>(97.1%)</small></td><td>77.6% <small>(97.4%)</small></td><td class="best">82.1% <small>(96.1%)</small></td></tr>
+          </tbody>
+        </table>
+      </div>
+      <p class="note">The showcase also says what cannot be automated: on synthetic support tickets, queue and
+        priority carry too little signal, and no backend decides a whole ticket. Measuring that first is part of the workflow.</p>
+    </div>
+  </section>
+
+  <section class="alt" id="modules" aria-labelledby="modules-h">
+    <div class="wrap">
+      <h2 id="modules-h">Modules</h2>
+      <p class="sub">The core has no runtime dependencies. Backends live in their own modules.</p>
+      <div class="modules">
+        <div class="module"><code>dukehoff-decide-core</code><span>API, schema binding, gating, calibration, diagnostics, cascade and ensemble.</span></div>
+        <div class="module"><code>dukehoff-decide-openai</code><span>Backend for OpenAI-compatible <code>/v1/chat/completions</code> with logprobs.</span></div>
+        <div class="module"><code>dukehoff-decide-classifier</code><span><code>LinearClassifier</code>: TF-IDF + logistic regression, no dependencies.</span></div>
+        <div class="module"><code>dukehoff-decide-embedding</code><span><code>EmbeddingClassifier</code> and <code>OpenAiEmbedder</code> for <code>/v1/embeddings</code>.</span></div>
+        <div class="module"><code>dukehoff-decide-spring-boot-starter</code><span>Spring Boot 4 auto-configuration, <code>DecisionTask&lt;T&gt;</code> beans, health and Micrometer metrics.</span></div>
+      </div>
+    </div>
+  </section>
+
+  <section class="cta-band" aria-labelledby="cta-h">
+    <div class="wrap">
+      <h2 id="cta-h">Calibrate once, decide with confidence</h2>
+      <p class="sub" style="margin:0 auto 0">A few hundred labelled cases are enough to start.</p>
+      <div class="ctas">
+        <a class="btn primary" href="https://github.com/dukehoff-gmbh/dukehoff-decide#getting-started">Read the guide</a>
+        <a class="btn ghost" href="https://central.sonatype.com/search?q=g%3Acom.dukehoff.decide">Maven Central</a>
+      </div>
+    </div>
+  </section>
+</main>
+
+<footer>
+  <div class="wrap">
+    <span>© 2026 Dukehoff GmbH · Apache License 2.0</span>
+    <span><a href="https://github.com/dukehoff-gmbh/dukehoff-decide">GitHub</a> ·
+      <a href="https://github.com/dukehoff-gmbh/dukehoff-decide/issues">Issues</a></span>
+  </div>
+</footer>
+
+<script>
+  document.querySelectorAll('[data-copy]').forEach(function (button) {
+    button.addEventListener('click', function () {
+      var text = document.getElementById(button.dataset.copy).textContent;
+      var done = function (label) { button.textContent = label; setTimeout(function () { button.textContent = 'Copy'; }, 1600); };
+      if (navigator.clipboard) navigator.clipboard.writeText(text).then(function () { done('Copied'); }, function () { done('Failed'); });
+      else done('Failed');
+    });
+  });
+</script>
+</body>
+</html>
